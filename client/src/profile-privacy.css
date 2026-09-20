@@ -1,0 +1,23 @@
+.student-id-card{max-width:390px;cursor:pointer}
+.student-id-card-inner{min-height:205px}
+.student-id-face{padding:17px 18px;border-radius:20px}
+.student-id-label{margin-top:14px;font-size:8px}
+.student-id-face strong{max-width:100%;overflow:hidden;font-size:25px;line-height:1.04;text-overflow:ellipsis;white-space:nowrap}
+.student-id-facts{display:flex;flex-wrap:nowrap;gap:5px;width:100%;margin-top:10px;overflow:hidden}
+.student-id-facts span{min-width:0;overflow:hidden;padding:5px 7px;font-size:8px;letter-spacing:0;text-overflow:ellipsis;white-space:nowrap}
+.student-id-face p{max-width:250px;margin-top:9px;font-size:9px;line-height:1.35}
+.student-id-flip{margin-top:auto;padding:7px 0;font-size:9px}
+.student-id-private-row{width:100%;gap:9px;margin-top:10px}
+.student-id-private-row span{flex:0 0 78px;font-size:8px}
+.student-id-private-row b{display:-webkit-box;overflow:hidden;font-size:10px;line-height:1.25;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.settings-privacy-card{display:grid;grid-template-columns:minmax(0,.9fr) minmax(260px,1.1fr);gap:24px;padding:22px;border:1px solid rgba(77,47,55,.1);border-radius:18px;background:#fffaf4}
+.settings-privacy-card h2{margin:7px 0 8px;font-size:25px;line-height:.98;letter-spacing:-.04em}
+.settings-privacy-card h2 em{color:#c97060;font-style:normal}
+.settings-privacy-card p{max-width:330px;margin:0;color:#82696d;font-size:12px;line-height:1.5}
+.privacy-control-list{display:grid;border-top:1px solid rgba(77,47,55,.1)}
+.privacy-control{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:13px 0;border-bottom:1px solid rgba(77,47,55,.1)}
+.privacy-control b,.privacy-control small{display:block}
+.privacy-control b{font-size:12px}
+.privacy-control small{margin-top:3px;color:#987477;font-size:10px}
+.privacy-control .theme-toggle{flex:none}
+@media(max-width:720px){.student-id-card{max-width:none}.settings-privacy-card{grid-template-columns:1fr;gap:18px}.student-id-face strong{font-size:23px}.student-id-facts span{max-width:50%}}

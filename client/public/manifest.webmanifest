@@ -1,0 +1,17 @@
+{
+  "name": "Convo — MTU Community",
+  "short_name": "Convo",
+  "description": "Your Mountain Top University community.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6eee5",
+  "theme_color": "#3b2930",
+  "icons": [
+    {
+      "src": "/convo-icon.png",
+      "sizes": "64x64",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

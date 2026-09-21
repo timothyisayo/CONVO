@@ -165,6 +165,32 @@ describe("live messaging helpers", () => {
     ]);
   });
 
+  it("uses secured RPCs for collaboration edits and deletes", async () => {
+    const { updateMtuGroupPoll, closeMtuGroupPoll, deleteMtuGroupPoll, updateMtuGroupTask, deleteMtuGroupTask, updateMtuGroupEvent, deleteMtuGroupEvent, updateMtuGroupAnnouncement, deleteMtuGroupAnnouncement } = await import("./supabase");
+    const calls: unknown[] = [];
+    const client = { rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: true, error: null }; } } as never;
+    await updateMtuGroupPoll(client, "poll-1", "Updated?", ["Yes", "No"], "2026-09-30T12:00:00.000Z", true);
+    await closeMtuGroupPoll(client, "poll-1");
+    await deleteMtuGroupPoll(client, "poll-1");
+    await updateMtuGroupTask(client, "task-1", "Updated task", "student-2", "2026-09-30T12:00:00.000Z");
+    await deleteMtuGroupTask(client, "task-1");
+    await updateMtuGroupEvent(client, "event-1", "Updated event", "Details", "2026-09-30T12:00:00.000Z", "Library");
+    await deleteMtuGroupEvent(client, "event-1");
+    await updateMtuGroupAnnouncement(client, "announcement-1", "Updated notice", "Details", null);
+    await deleteMtuGroupAnnouncement(client, "announcement-1");
+    expect(calls).toEqual([
+      ["update_mtu_group_poll", { p_poll_id: "poll-1", p_question: "Updated?", p_options: ["Yes", "No"], p_closes_at: "2026-09-30T12:00:00.000Z", p_anonymous_voters: true }],
+      ["close_mtu_group_poll", { p_poll_id: "poll-1" }],
+      ["delete_mtu_group_poll", { p_poll_id: "poll-1" }],
+      ["update_mtu_group_task", { p_task_id: "task-1", p_title: "Updated task", p_assignee_id: "student-2", p_due_at: "2026-09-30T12:00:00.000Z" }],
+      ["delete_mtu_group_task", { p_task_id: "task-1" }],
+      ["update_mtu_group_event", { p_event_id: "event-1", p_title: "Updated event", p_description: "Details", p_starts_at: "2026-09-30T12:00:00.000Z", p_location: "Library" }],
+      ["delete_mtu_group_event", { p_event_id: "event-1" }],
+      ["update_mtu_group_announcement", { p_announcement_id: "announcement-1", p_title: "Updated notice", p_body: "Details", p_expires_at: null }],
+      ["delete_mtu_group_announcement", { p_announcement_id: "announcement-1" }],
+    ]);
+  });
+
   it("uses the conversation appearance RPCs with the secure contract", async () => {
     const calls: unknown[] = [];
     const appearance = { chat_theme: "sage" as const, wallpaper_variant: "organic" as const };

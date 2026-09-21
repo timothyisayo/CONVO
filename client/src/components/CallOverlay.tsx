@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, CameraOff, Mic, MicOff, Phone, PhoneOff } from "lucide-react";
+import { Camera, CameraOff, Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, ScreenShare, ScreenShareOff } from "lucide-react";
 import { Room, RoomEvent, Track } from "livekit-client";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getProviderToken, startProviderCall, updateProviderCallStatus, type ProviderCall } from "@/lib/providers";
@@ -16,6 +16,8 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
   const [duration, setDuration] = useState(0);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const ownChannelRef = useRef<any>(null);
   const peerChannelRef = useRef<any>(null);
@@ -67,7 +69,7 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
       try { await supabase.rpc("send_mtu_message", { p_conversation_id: active.conversation_id, p_body: `Call event: ${label}` }); } catch {}
     }
     if (terminalNoticeRef.current) { clearTimeout(terminalNoticeRef.current); terminalNoticeRef.current = null; }
-    setCallState(null); setIncomingState(null); setStatus("idle"); setError(""); setPeerName(""); setDuration(0); setMuted(false); setCameraOff(false);
+    setCallState(null); setIncomingState(null); setStatus("idle"); setError(""); setPeerName(""); setDuration(0); setMuted(false); setCameraOff(false); setScreenSharing(false); setMinimized(false);
     participantIdsRef.current = [];
     if (peerChannelRef.current && supabase) { void supabase.removeChannel(peerChannelRef.current); peerChannelRef.current = null; peerIdRef.current = ""; }
   };
@@ -76,13 +78,14 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
     answerAttemptRef.current = answer;
     callEventLoggedRef.current = false;
     participantIdsRef.current = [];
-    setCallState(next); setIncomingState(null); setStatus(answer ? "connecting" : "calling"); setError(""); setDuration(0);
+    setCallState(next); setIncomingState(null); setStatus(answer ? "connecting" : "calling"); setError(""); setDuration(0); setMuted(false); setCameraOff(false); setScreenSharing(false); setMinimized(false);
     try {
       const access = await getProviderToken(supabase, next.id);
       const room = new Room(); roomRef.current = room;
       room.on(RoomEvent.TrackSubscribed, (track) => { if (track.kind === Track.Kind.Video && remoteVideoRef.current) track.attach(remoteVideoRef.current); if (track.kind === Track.Kind.Audio && remoteAudioRef.current) track.attach(remoteAudioRef.current); });
       room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach());
       room.on(RoomEvent.LocalTrackPublished, (publication) => { if (publication.kind === Track.Kind.Video && localVideoRef.current && publication.track) publication.track.attach(localVideoRef.current); });
+      room.on(RoomEvent.LocalTrackUnpublished, (publication) => { if (publication.source === Track.Source.ScreenShare) setScreenSharing(false); });
       room.on(RoomEvent.Reconnecting, () => setStatus("reconnecting"));
       room.on(RoomEvent.Reconnected, () => setStatus("connected"));
       room.on(RoomEvent.Disconnected, () => { if (callRef.current && !["ended", "declined", "failed"].includes(status)) setStatus("ended"); });
@@ -147,9 +150,20 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
   const decline = async () => { if (!incoming || !supabase) return; try { await sendSignal(incoming.caller_id, "declined", { callId: incoming.id }); } catch {} await cleanup("declined"); };
   const toggleMic = async () => { await roomRef.current?.localParticipant.setMicrophoneEnabled(muted); setMuted(!muted); };
   const toggleCam = async () => { await roomRef.current?.localParticipant.setCameraEnabled(cameraOff); setCameraOff(!cameraOff); };
+  const toggleScreenShare = async () => {
+    const participant = roomRef.current?.localParticipant;
+    if (!participant) return;
+    try {
+      await participant.setScreenShareEnabled(!screenSharing);
+      setScreenSharing((value) => !value);
+    } catch (reason) {
+      setError(reason instanceof Error && reason.name === "NotAllowedError" ? "Screen sharing was cancelled." : "Screen sharing is unavailable in this browser.");
+    }
+  };
   const end = () => { void cleanup("ended"); };
+  const toggleMinimized = () => { if (!incoming) setMinimized((value) => !value); };
   const formattedDuration = `${String(Math.floor(duration / 60)).padStart(2, "0")}:${String(duration % 60).padStart(2, "0")}`;
   const title = incoming ? `Incoming call from ${peerName || "MTU student"}` : status === "connected" ? peerName || "Connected" : status === "calling" ? `Calling ${peerName || "MTU student"}` : status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Reconnecting…" : status === "declined" ? "Call declined" : status === "ended" ? "Call ended" : status === "failed" ? "Call failed" : "Call";
   const stateLabel = status === "connected" ? `● Connected · ${formattedDuration}` : status === "reconnecting" ? "Reconnecting…" : status === "declined" ? "Declined" : status === "ended" ? "Ended" : status === "failed" ? "Connection failed" : "";
-  return <div className="call-overlay" role="dialog" aria-label="Convo call"><div className="call-overlay-card"><span className="eyebrow dark">{active?.call_type === "video" ? "Video call" : "Voice call"}</span><h2>{title}</h2><p>{incoming ? "A verified student is calling you." : error || (active ? `Call ${active.callee_id === userId ? "request" : "in progress"}.` : "")}</p>{stateLabel && <strong aria-live="polite">{stateLabel}</strong>}{active?.call_type === "video" && <><video ref={remoteVideoRef} className="call-video-stage" autoPlay playsInline /><video ref={localVideoRef} className="call-video-local" autoPlay muted playsInline /></>}<audio ref={remoteAudioRef} autoPlay />{error && <small role="alert">{error}</small>}<div className="call-actions">{incoming ? <><button className="outline-button" onClick={decline}><PhoneOff size={15} /> Decline</button><button className="primary-button" onClick={accept}><Phone size={15} /> Accept</button></> : status === "connected" || status === "calling" || status === "reconnecting" ? <><button className="outline-button" onClick={() => void toggleMic()}>{muted ? <MicOff size={15} /> : <Mic size={15} />} {muted ? "Unmute" : "Mute"}</button>{active?.call_type === "video" && <button className="outline-button" onClick={() => void toggleCam()}>{cameraOff ? <CameraOff size={15} /> : <Camera size={15} />} Camera</button>}<button className="danger-button" onClick={end}><PhoneOff size={15} /> End</button></> : status === "failed" ? <><button className="outline-button" onClick={retry}><Phone size={15} /> Retry</button><button className="danger-button" onClick={end}><PhoneOff size={15} /> Cancel</button></> : <button className="danger-button" onClick={end}><PhoneOff size={15} /> Cancel</button>}</div></div></div>;
+  return <div className={`call-overlay${minimized ? " is-minimized" : ""}`} role="dialog" aria-label="Convo call"><div className="call-overlay-card"><div className="call-overlay-heading"><span className="eyebrow dark">{active?.call_type === "video" ? "Video call" : "Voice call"}</span>{!incoming && <button className="call-window-toggle" aria-label={minimized ? "Expand call" : "Minimize call"} onClick={toggleMinimized}>{minimized ? <Maximize2 size={15} /> : <Minimize2 size={15} />}</button>}</div><h2>{title}</h2>{!minimized && <><p>{incoming ? "A verified student is calling you." : error || (active ? `Call ${active.callee_id === userId ? "request" : "in progress"}.` : "")}</p>{stateLabel && <strong aria-live="polite">{stateLabel}</strong>}{active?.call_type === "video" && <><video ref={remoteVideoRef} className="call-video-stage" autoPlay playsInline /><video ref={localVideoRef} className="call-video-local" autoPlay muted playsInline /></>}<audio ref={remoteAudioRef} autoPlay />{error && <small role="alert">{error}</small>}<div className="call-actions">{incoming ? <><button className="outline-button" onClick={decline}><PhoneOff size={15} /> Decline</button><button className="primary-button" onClick={accept}><Phone size={15} /> Accept</button></> : status === "connected" || status === "calling" || status === "reconnecting" ? <><button className="outline-button" onClick={() => void toggleMic()}>{muted ? <MicOff size={15} /> : <Mic size={15} />} {muted ? "Unmute" : "Mute"}</button>{active?.call_type === "video" && <button className="outline-button" onClick={() => void toggleCam()}>{cameraOff ? <CameraOff size={15} /> : <Camera size={15} />} Camera</button>}{active?.call_type === "video" && <button className="outline-button" onClick={() => void toggleScreenShare()}>{screenSharing ? <ScreenShareOff size={15} /> : <ScreenShare size={15} />} {screenSharing ? "Stop sharing" : "Share screen"}</button>}<button className="danger-button" onClick={end}><PhoneOff size={15} /> End</button></> : status === "failed" ? <><button className="outline-button" onClick={retry}><Phone size={15} /> Retry</button><button className="danger-button" onClick={end}><PhoneOff size={15} /> Cancel</button></> : <button className="danger-button" onClick={end}><PhoneOff size={15} /> Cancel</button>}</div></>}</div></div>;
 }

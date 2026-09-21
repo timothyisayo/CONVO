@@ -473,6 +473,14 @@ export async function cancelMtuGroupEvent(client: Pick<SupabaseClient, "rpc">, e
   const { data, error } = await client.rpc("cancel_mtu_group_event", { p_event_id: eventId });
   return { data: Boolean(data), error };
 }
+export async function updateMtuGroupEvent(client: Pick<SupabaseClient, "rpc">, eventId: string, title: string, description: string, startsAt: string, location: string) {
+  const { data, error } = await client.rpc("update_mtu_group_event", { p_event_id: eventId, p_title: title, p_description: description, p_starts_at: startsAt, p_location: location });
+  return { data: Boolean(data), error };
+}
+export async function deleteMtuGroupEvent(client: Pick<SupabaseClient, "rpc">, eventId: string) {
+  const { data, error } = await client.rpc("delete_mtu_group_event", { p_event_id: eventId });
+  return { data: Boolean(data), error };
+}
 export async function createMtuGroupNote(client: Pick<SupabaseClient, "rpc">, conversationId: string, title: string, body: string) {
   const { data, error } = await client.rpc("create_mtu_group_note", { p_conversation_id: conversationId, p_title: title, p_body: body });
   return { data: typeof data === "string" ? data : null, error };
@@ -492,6 +500,14 @@ export async function createMtuGroupAnnouncement(client: Pick<SupabaseClient, "r
 export async function listMtuGroupAnnouncements(client: Pick<SupabaseClient, "rpc">, conversationId: string) {
   const { data, error } = await client.rpc("list_mtu_group_announcements", { p_conversation_id: conversationId });
   return { data: (data || []) as MtuGroupAnnouncement[], error };
+}
+export async function updateMtuGroupAnnouncement(client: Pick<SupabaseClient, "rpc">, announcementId: string, title: string, body: string, expiresAt: string | null = null) {
+  const { data, error } = await client.rpc("update_mtu_group_announcement", { p_announcement_id: announcementId, p_title: title, p_body: body, p_expires_at: expiresAt });
+  return { data: Boolean(data), error };
+}
+export async function deleteMtuGroupAnnouncement(client: Pick<SupabaseClient, "rpc">, announcementId: string) {
+  const { data, error } = await client.rpc("delete_mtu_group_announcement", { p_announcement_id: announcementId });
+  return { data: Boolean(data), error };
 }
 
 export type MtuGroupPermissions = { allow_member_messages: boolean; allow_member_invites: boolean; require_join_approval: boolean };
@@ -556,6 +572,18 @@ export async function castMtuGroupPollVote(client: Pick<SupabaseClient, "rpc">, 
   const { data, error } = await client.rpc("cast_mtu_group_poll_vote", { p_poll_id: pollId, p_option_id: optionId });
   return { data: (data || null) as { poll_id: string; option_id: string } | null, error };
 }
+export async function updateMtuGroupPoll(client: Pick<SupabaseClient, "rpc">, pollId: string, question: string, options: string[], closesAt: string | null = null, anonymousVoters = false) {
+  const { data, error } = await client.rpc("update_mtu_group_poll", { p_poll_id: pollId, p_question: question, p_options: options, p_closes_at: closesAt, p_anonymous_voters: anonymousVoters });
+  return { data: Boolean(data), error };
+}
+export async function closeMtuGroupPoll(client: Pick<SupabaseClient, "rpc">, pollId: string) {
+  const { data, error } = await client.rpc("close_mtu_group_poll", { p_poll_id: pollId });
+  return { data: Boolean(data), error };
+}
+export async function deleteMtuGroupPoll(client: Pick<SupabaseClient, "rpc">, pollId: string) {
+  const { data, error } = await client.rpc("delete_mtu_group_poll", { p_poll_id: pollId });
+  return { data: Boolean(data), error };
+}
 
 export type MtuGroupTask = { task_id: string; title: string; due_at?: string | null; completed_at?: string | null; created_by: string; assignee_id?: string | null; assignee_display_name?: string | null; completed_by?: string | null; created_at: string };
 
@@ -572,6 +600,31 @@ export async function listMtuGroupTasks(client: Pick<SupabaseClient, "rpc">, con
 export async function setMtuGroupTaskCompleted(client: Pick<SupabaseClient, "rpc">, taskId: string, completed: boolean) {
   const { data, error } = await client.rpc("set_mtu_group_task_completed", { p_task_id: taskId, p_completed: completed });
   return { data: Boolean(data), error };
+}
+export async function updateMtuGroupTask(client: Pick<SupabaseClient, "rpc">, taskId: string, title: string, assigneeId: string | null = null, dueAt: string | null = null) {
+  const { data, error } = await client.rpc("update_mtu_group_task", { p_task_id: taskId, p_title: title, p_assignee_id: assigneeId, p_due_at: dueAt });
+  return { data: Boolean(data), error };
+}
+export async function deleteMtuGroupTask(client: Pick<SupabaseClient, "rpc">, taskId: string) {
+  const { data, error } = await client.rpc("delete_mtu_group_task", { p_task_id: taskId });
+  return { data: Boolean(data), error };
+}
+
+export function subscribeToMtuGroupActivity(
+  client: Pick<SupabaseClient, "channel" | "removeChannel">,
+  conversationId: string,
+  onChange: () => void,
+) {
+  const channel = client.channel(`convo-group-activity-${conversationId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_polls", filter: `conversation_id=eq.${conversationId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_tasks", filter: `conversation_id=eq.${conversationId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_events", filter: `conversation_id=eq.${conversationId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_announcements", filter: `conversation_id=eq.${conversationId}` }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_poll_options" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_poll_votes" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "group_event_attendees" }, onChange)
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
 }
 
 export async function markMtuConversationRead(client: Pick<SupabaseClient, "rpc">, conversationId: string) {

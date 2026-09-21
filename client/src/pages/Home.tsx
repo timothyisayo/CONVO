@@ -42,6 +42,8 @@ import {
   cancelMtuGroupEvent,
   createMtuGroupNote,
   createMtuGroupAnnouncement,
+  updateMtuGroupAnnouncement,
+  deleteMtuGroupAnnouncement,
   createMtuGroupConversation,
   touchMtuLastSeen,
   searchMtuGroups,
@@ -51,7 +53,12 @@ import {
   deleteMtuGroupMessage,
   listMtuSharedFiles,
   createMtuGroupPoll,
+  updateMtuGroupPoll,
+  closeMtuGroupPoll,
+  deleteMtuGroupPoll,
   createMtuGroupTask,
+  updateMtuGroupTask,
+  deleteMtuGroupTask,
   castMtuGroupPollVote,
   deleteMtuMessage,
   editMtuMessage,
@@ -69,6 +76,8 @@ import {
   listMtuGroupPolls,
   listMtuGroupTasks,
   setMtuGroupEventResponse,
+  updateMtuGroupEvent,
+  deleteMtuGroupEvent,
   updateMtuGroupNote,
   listMtuSavedMessages,
   isMtuEmail,
@@ -93,6 +102,7 @@ import {
   subscribeToMtuPublicProfiles,
   subscribeToMtuConversation,
   subscribeToMtuMessages,
+  subscribeToMtuGroupActivity,
   supabase,
   setMtuConversationPreference,
   setMtuConversationRailState,
@@ -264,6 +274,20 @@ export default function Home() {
   const directoryProfileSyncedRef = useRef(false);
   const isUsingApprovedTestEmail =
     email.trim().toLowerCase() === CONVO_TEST_LOGIN_EMAIL;
+
+  useEffect(() => {
+    const robotsSelector = 'meta[name="robots"]';
+    const existingRobots = document.head.querySelector(robotsSelector);
+    if (showDashboard) {
+      const robots = existingRobots || document.head.appendChild(document.createElement("meta"));
+      robots.setAttribute("name", "robots");
+      robots.setAttribute("content", "noindex, nofollow, noarchive");
+      document.title = "Convo — School Communication Platform";
+    } else if (existingRobots) {
+      existingRobots.remove();
+      document.title = "Convo — School Communication Platform";
+    }
+  }, [showDashboard]);
 
   useEffect(() => {
     if (!resetSuccess) return;
@@ -891,7 +915,7 @@ export default function Home() {
     setProfileVisibility(visibility);
     return { ok: true };
   };
-  const searchStudents = async (query: string) => {
+  const searchStudents = React.useCallback(async (query: string) => {
     if (!supabase) return { data: [], error: null };
     if (!directoryProfileSyncedRef.current) {
       const sync = await syncMyMtuDirectoryProfile(supabase);
@@ -899,7 +923,7 @@ export default function Home() {
       directoryProfileSyncedRef.current = true;
     }
     return searchMtuStudents(supabase, query);
-  };
+  }, []);
   const sendConnectionRequest = async (recipientId: string) => {
     if (!supabase)
       return { ok: false, error: "Sign in to connect with another student." };
@@ -1146,6 +1170,16 @@ export default function Home() {
     const result = await listMtuGroupEvents(supabase, conversationId);
     return result.error ? { data: [], error: { message: result.error.message } } : { data: result.data, error: null };
   };
+  const updateGroupEvent = async (eventId: string, title: string, description: string, startsAt: string, location: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to edit this event." };
+    const result = await updateMtuGroupEvent(supabase, eventId, title, description, startsAt, location);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
+  const deleteGroupEvent = async (eventId: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to delete this event." };
+    const result = await deleteMtuGroupEvent(supabase, eventId);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
   const setGroupEventResponse = async (eventId: string, response: "going" | "maybe" | "declined") => {
     if (!supabase) return { data: null, error: { message: "Sign in to respond to this event." } };
     const result = await setMtuGroupEventResponse(supabase, eventId, response);
@@ -1181,6 +1215,16 @@ export default function Home() {
     const result = await listMtuGroupAnnouncements(supabase, conversationId);
     return result.error ? { data: [], error: { message: result.error.message } } : { data: result.data, error: null };
   };
+  const updateGroupAnnouncement = async (announcementId: string, title: string, body: string, expiresAt: string | null) => {
+    if (!supabase) return { ok: false, error: "Sign in to edit this announcement." };
+    const result = await updateMtuGroupAnnouncement(supabase, announcementId, title, body, expiresAt);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
+  const deleteGroupAnnouncement = async (announcementId: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to delete this announcement." };
+    const result = await deleteMtuGroupAnnouncement(supabase, announcementId);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
   const createGroupPoll = async (conversationId: string, question: string, options: string[], closesAt: string | null, anonymousVoters: boolean) => {
     if (!supabase) return { data: null, error: "Sign in to create a poll." };
     const result = await createMtuGroupPoll(supabase, conversationId, question, options, closesAt, anonymousVoters);
@@ -1190,6 +1234,21 @@ export default function Home() {
     if (!supabase) return { data: [], error: "Sign in to view polls." };
     const result = await listMtuGroupPolls(supabase, conversationId);
     return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
+  };
+  const updateGroupPoll = async (pollId: string, question: string, options: string[], closesAt: string | null, anonymousVoters: boolean) => {
+    if (!supabase) return { ok: false, error: "Sign in to edit this poll." };
+    const result = await updateMtuGroupPoll(supabase, pollId, question, options, closesAt, anonymousVoters);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
+  const closeGroupPoll = async (pollId: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to close this poll." };
+    const result = await closeMtuGroupPoll(supabase, pollId);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
+  const deleteGroupPoll = async (pollId: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to delete this poll." };
+    const result = await deleteMtuGroupPoll(supabase, pollId);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
   };
   const voteOnGroupPoll = async (pollId: string, optionId: string) => {
     if (!supabase) return { ok: false, error: "Sign in to vote." };
@@ -1205,6 +1264,16 @@ export default function Home() {
     if (!supabase) return { data: [], error: "Sign in to view group tasks." };
     const result = await listMtuGroupTasks(supabase, conversationId);
     return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
+  };
+  const updateGroupTask = async (taskId: string, title: string, assigneeId: string | null, dueAt: string | null) => {
+    if (!supabase) return { ok: false, error: "Sign in to edit this task." };
+    const result = await updateMtuGroupTask(supabase, taskId, title, assigneeId, dueAt);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
+  };
+  const deleteGroupTask = async (taskId: string) => {
+    if (!supabase) return { ok: false, error: "Sign in to delete this task." };
+    const result = await deleteMtuGroupTask(supabase, taskId);
+    return result.error ? { ok: false, error: result.error.message } : { ok: Boolean(result.data) };
   };
   const setGroupTaskCompleted = async (taskId: string, completed: boolean) => {
     if (!supabase) return { ok: false, error: "Sign in to update a task." };
@@ -1234,6 +1303,10 @@ export default function Home() {
         void client.removeChannel(channel);
       }
     };
+  };
+  const subscribeToGroupActivity = (conversationId: string, onChange: () => void) => {
+    if (!supabase) return () => undefined;
+    return subscribeToMtuGroupActivity(supabase, conversationId, onChange);
   };
   const acceptConnectionRequest = async (requestId: string) => {
     if (!supabase)
@@ -1446,8 +1519,13 @@ export default function Home() {
           onLoadSavedMessages={supabase ? loadSavedMessages : undefined}
           onSearchConversationMessages={supabase ? searchConversationMessages : undefined}
           onCreateGroupPoll={supabase ? createGroupPoll : undefined}
+          onUpdateGroupPoll={supabase ? updateGroupPoll : undefined}
+          onCloseGroupPoll={supabase ? closeGroupPoll : undefined}
+          onDeleteGroupPoll={supabase ? deleteGroupPoll : undefined}
           onLoadGroupPolls={supabase ? loadGroupPolls : undefined}
           onCreateGroupEvent={supabase ? createGroupEvent : undefined}
+          onUpdateGroupEvent={supabase ? updateGroupEvent : undefined}
+          onDeleteGroupEvent={supabase ? deleteGroupEvent : undefined}
           onLoadGroupEvents={supabase ? loadGroupEvents : undefined}
           onSetGroupEventResponse={supabase ? setGroupEventResponse : undefined}
           onCancelGroupEvent={supabase ? cancelGroupEvent : undefined}
@@ -1455,11 +1533,16 @@ export default function Home() {
           onUpdateGroupNote={supabase ? updateGroupNote : undefined}
           onLoadGroupNotes={supabase ? loadGroupNotes : undefined}
           onCreateGroupAnnouncement={supabase ? createGroupAnnouncement : undefined}
+          onUpdateGroupAnnouncement={supabase ? updateGroupAnnouncement : undefined}
+          onDeleteGroupAnnouncement={supabase ? deleteGroupAnnouncement : undefined}
           onLoadGroupAnnouncements={supabase ? loadGroupAnnouncements : undefined}
           onVoteOnGroupPoll={supabase ? voteOnGroupPoll : undefined}
           onCreateGroupTask={supabase ? createGroupTask : undefined}
+          onUpdateGroupTask={supabase ? updateGroupTask : undefined}
+          onDeleteGroupTask={supabase ? deleteGroupTask : undefined}
           onLoadGroupTasks={supabase ? loadGroupTasks : undefined}
           onSetGroupTaskCompleted={supabase ? setGroupTaskCompleted : undefined}
+          onSubscribeToGroupActivity={supabase ? subscribeToGroupActivity : undefined}
           onLoadConnectionRequests={
             supabase ? loadConnectionRequests : undefined
           }
@@ -1535,30 +1618,7 @@ export default function Home() {
             <small>MTU COMMUNITY</small>
           </span>
         </button>
-        <nav className="desktop-nav" aria-label="Primary navigation">
-          <button
-            className={activeSection === "home" ? "nav-active" : ""}
-            onClick={() => goTo("home")}
-          >
-            Home
-          </button>
-          <button
-            className={activeSection === "commons" ? "nav-active" : ""}
-            onClick={() => goTo("commons")}
-          >
-            The commons
-          </button>
-          <button onClick={() => comingSoon("Discover")}>Discover</button>
-          <button onClick={() => comingSoon("About Convo")}>About</button>
-        </nav>
         <div className="nav-actions">
-          <button
-            className="icon-button"
-            onClick={() => comingSoon("Search")}
-            aria-label="Search"
-          >
-            <Search size={17} />
-          </button>
           <button className="text-button" onClick={() => openAuth("login")}>
             Log in
           </button>
@@ -1643,9 +1703,6 @@ export default function Home() {
               >
                 Enter Convo <ArrowRight size={17} />
               </button>
-              <button className="ghost-button" onClick={() => goTo("commons")}>
-                <Play size={15} fill="currentColor" /> See how it works
-              </button>
             </div>
             <div className="hero-note">
               <span className="presence-dot" /> Verified MTU community{" "}
@@ -1693,134 +1750,11 @@ export default function Home() {
             </div>
           </div>
           <div className="scroll-cue">
-            <span>Scroll to explore</span>
+            <span>Live campus updates</span>
             <ChevronDown size={18} />
           </div>
         </section>
-
-        <section id="commons" className="commons-scene section-shell">
-          <div className="section-intro reveal-up">
-            <p className="eyebrow dark">
-              <span className="eyebrow-dot coral" /> One place, many circles
-            </p>
-            <h2>
-              A campus that
-              <br />
-              <em>keeps moving.</em>
-            </h2>
-            <p>
-              Live conversations, stories from your circles, and groups shaped
-              around the way MTU students actually connect.
-            </p>
-          </div>
-          <div className="hub-frame">
-            <img
-              src={hubAsset || undefined}
-              alt="Warm-toned preview of the Convo community hub"
-            />
-            <div className="hub-overlay">
-              <div>
-                <span className="live-pill">
-                  <i />{" "}
-                  {isLoading
-                    ? "Connecting"
-                    : isLive
-                      ? "Live now"
-                      : mode === "setup"
-                        ? "Ready for your circles"
-                        : "Needs a moment"}
-                </span>
-                <b>
-                  {isLoading
-                    ? "Loading your campus pulse…"
-                    : error
-                      ? "Live campus data needs setup."
-                      : posts[0]?.body ||
-                        "Your circles are ready for their first conversation."}
-                </b>
-              </div>
-              <button
-                className="circle-button"
-                onClick={() => comingSoon("Campus hub")}
-                aria-label="Explore campus hub"
-              >
-                <ArrowRight size={19} />
-              </button>
-            </div>
-          </div>
-          <CampusPanels
-            stories={stories}
-            posts={posts}
-            groups={groups}
-            isLoading={isLoading}
-            error={error}
-            isLive={isLive}
-            onAction={comingSoon}
-          />
-        </section>
-
-        <section id="rhythm" className="rhythm-scene section-shell">
-          <div className="rhythm-copy reveal-up">
-            <p className="eyebrow dark">
-              <span className="eyebrow-dot sage-dot" /> Made for the in-between
-            </p>
-            <h2>
-              Small moments.
-              <br />
-              <em>Real rhythm.</em>
-            </h2>
-            <p>
-              {posts[1]?.body ||
-                "Reply to the announcement. Find a study circle. Catch a story before it disappears."}
-            </p>
-            <button
-              className="outline-button"
-              onClick={() => openAuth("signup")}
-            >
-              Find your circle <ArrowRight size={16} />
-            </button>
-          </div>
-        </section>
-
-        <section className="closing-scene">
-          <div className="closing-orbit orbit-a" />
-          <div className="closing-orbit orbit-b" />
-          <div className="closing-content">
-            <span className="closing-mark">
-              <span />
-              <span />
-              <span />
-            </span>
-            <p className="eyebrow light">
-              <span className="eyebrow-dot" /> Your place on campus
-            </p>
-            <h2>
-              Come find
-              <br />
-              <em>your people.</em>
-            </h2>
-            <button className="dark-button" onClick={() => openAuth("signup")}>
-              Join Convo <ArrowRight size={17} />
-            </button>
-          </div>
-          <div className="closing-aside">
-            <Layers3 size={18} />
-            <span>
-              Live circles and real
-              <br />
-              campus rhythm.
-            </span>
-          </div>
-        </section>
       </main>
-
-      <footer className="site-footer">
-        <span>© 2026 Convo</span>
-        <span>Built for MTU conversations between the big moments.</span>
-        <button onClick={() => toast("Made for MTU students, with care.")}>
-          <Waves size={15} /> Keep in touch
-        </button>
-      </footer>
 
       {(showModal || resetSuccess) && (
         <div className="modal-backdrop" onClick={() => setShowModal(false)}>

@@ -1,0 +1,16 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /dashboard
+Disallow: /messages
+Disallow: /groups
+Disallow: /profile
+Disallow: /settings
+Disallow: /notifications
+Disallow: /assistant
+Disallow: /vault
+Disallow: /files
+Disallow: /search
+Disallow: /id
+
+Sitemap: https://convo-tygp.onrender.com/sitemap.xml

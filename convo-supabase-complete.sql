@@ -26,6 +26,8 @@ create table if not exists public.profiles (
 alter table public.profiles add column if not exists student_id text;
 alter table public.profiles add column if not exists bio text;
 alter table public.profiles add column if not exists status_text text;
+alter table public.profiles add column if not exists profile_visibility jsonb not null default
+  '{"programme": true, "college": true, "level": true, "bio": true}'::jsonb;
 
 update public.profiles
 set student_id = 'MTU-' || upper(substr(replace(id::text, '-', ''), 1, 8))
@@ -49,9 +51,10 @@ $$;
 alter table public.profiles enable row level security;
 drop policy if exists "Students can read own profile" on public.profiles;
 drop policy if exists "MTU users can read profiles" on public.profiles;
-create policy "MTU users can read profiles"
+drop policy if exists "Students can read own profile" on public.profiles;
+create policy "Students can read own profile"
 on public.profiles for select to authenticated
-using (public.is_mtu_account());
+using (auth.uid() = id and public.is_mtu_account());
 
 drop policy if exists "Users can manage their own profile" on public.profiles;
 create policy "Users can manage their own profile"
@@ -843,12 +846,11 @@ $$;
 
 alter table public.profiles enable row level security;
 drop policy if exists "Students can read own profile" on public.profiles;
-
 drop policy if exists "MTU users can read profiles" on public.profiles;
-create policy "MTU users can read profiles"
+create policy "Students can read own profile"
 on public.profiles for select
 to authenticated
-using (public.is_mtu_account());
+using (auth.uid() = id and public.is_mtu_account());
 
 drop policy if exists "Users can manage their own profile" on public.profiles;
 create policy "Users can manage their own profile"
@@ -949,11 +951,11 @@ as $$
     p.display_name,
     p.student_id,
     p.id = auth.uid() as is_self,
-    p.level,
-    p.department,
-    p.programme,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'level')::boolean, true) then p.level else null end,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'college')::boolean, true) then p.department else null end,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'programme')::boolean, true) then p.programme else null end,
     p.avatar_url,
-    p.bio,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'bio')::boolean, true) then p.bio else null end,
     p.status_text
   from public.profiles p
   where public.is_mtu_account()
@@ -981,6 +983,7 @@ as $$
 declare
   metadata jsonb;
   public_name text;
+  visibility jsonb;
 begin
   if auth.uid() is null or not public.is_mtu_account() then
     raise exception 'Only verified MTU users can synchronize a public profile';
@@ -989,14 +992,20 @@ begin
   from auth.users u where u.id = auth.uid();
   public_name := nullif(trim(coalesce(metadata ->> 'nickname', metadata ->> 'display_name', '')), '');
   if public_name is null then return false; end if;
-  insert into public.profiles (id, display_name, student_id, level, department, programme, avatar_url, bio)
+  visibility := jsonb_build_object(
+    'programme', coalesce((metadata -> 'profile_visibility' ->> 'programme')::boolean, true),
+    'college', coalesce((metadata -> 'profile_visibility' ->> 'college')::boolean, true),
+    'level', coalesce((metadata -> 'profile_visibility' ->> 'level')::boolean, true),
+    'bio', coalesce((metadata -> 'profile_visibility' ->> 'bio')::boolean, true)
+  );
+  insert into public.profiles (id, display_name, student_id, level, department, programme, avatar_url, bio, profile_visibility)
   values (
     auth.uid(), public_name,
     coalesce(nullif(metadata ->> 'student_id', ''), 'MTU-' || upper(substr(replace(auth.uid()::text, '-', ''), 1, 8))),
     nullif(metadata ->> 'level', ''),
     nullif(coalesce(metadata ->> 'college', metadata ->> 'department'), ''),
     nullif(coalesce(metadata ->> 'programme', metadata ->> 'major'), ''),
-    nullif(metadata ->> 'avatar_url', ''), nullif(metadata ->> 'bio', '')
+    nullif(metadata ->> 'avatar_url', ''), nullif(metadata ->> 'bio', ''), visibility
   )
   on conflict (id) do update set
     display_name = excluded.display_name,
@@ -1005,7 +1014,8 @@ begin
     department = coalesce(excluded.department, public.profiles.department),
     programme = coalesce(excluded.programme, public.profiles.programme),
     avatar_url = coalesce(excluded.avatar_url, public.profiles.avatar_url),
-    bio = coalesce(excluded.bio, public.profiles.bio);
+    bio = coalesce(excluded.bio, public.profiles.bio),
+    profile_visibility = excluded.profile_visibility;
   return true;
 end;
 $$;
@@ -1260,8 +1270,12 @@ language sql security definer stable set search_path = pg_catalog, public, auth
 as $$ select cm.user_id,p.display_name,p.student_id,cm.group_role from public.conversation_members cm join public.conversations c on c.id = cm.conversation_id and c.kind = 'group' join public.profiles p on p.id = cm.user_id where cm.conversation_id = p_conversation_id and public.is_mtu_account() and exists (select 1 from public.conversation_members me where me.conversation_id = p_conversation_id and me.user_id = auth.uid()) order by case cm.group_role when 'owner' then 0 when 'admin' then 1 else 2 end,p.display_name $$;
 create or replace function public.add_mtu_group_members(p_conversation_id uuid, p_member_ids uuid[])
 returns integer language plpgsql security definer set search_path = pg_catalog, public, auth
-as $$ declare added integer; begin
-  if auth.uid() is null or not public.is_mtu_account() or not exists (select 1 from public.conversation_members actor join public.conversations c on c.id = actor.conversation_id and c.kind = 'group' where actor.conversation_id = p_conversation_id and actor.user_id = auth.uid() and actor.group_role in ('owner','admin')) then raise exception 'Only group owners and admins can add members'; end if;
+as $$ declare added integer; actor_role text; can_invite boolean; begin
+  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to manage this group'; end if;
+  select actor.group_role into actor_role from public.conversation_members actor join public.conversations c on c.id = actor.conversation_id and c.kind = 'group' where actor.conversation_id = p_conversation_id and actor.user_id = auth.uid();
+  if actor_role is null then raise exception 'You are not a member of this group'; end if;
+  select coalesce(permissions.allow_member_invites, true) into can_invite from public.group_permissions permissions where permissions.conversation_id = p_conversation_id;
+  if actor_role not in ('owner','admin') and not coalesce(can_invite, true) then raise exception 'Only group admins can add members'; end if;
   if exists (select 1 from unnest(coalesce(p_member_ids,'{}')) member_id where member_id <> auth.uid() and not exists (select 1 from public.connection_requests r where r.status = 'accepted' and ((r.requester_id = auth.uid() and r.recipient_id = member_id) or (r.requester_id = member_id and r.recipient_id = auth.uid())))) then raise exception 'New members must be accepted MTU connections'; end if;
   insert into public.conversation_members (conversation_id,user_id,group_role) select p_conversation_id,member_id,'member' from unnest(coalesce(p_member_ids,'{}')) member_id where member_id <> auth.uid() on conflict (conversation_id,user_id) do nothing; get diagnostics added = row_count; return added;
 end $$;
@@ -1274,10 +1288,16 @@ as $$ begin
 end $$;
 create or replace function public.remove_mtu_group_member(p_conversation_id uuid,p_member_id uuid)
 returns boolean language plpgsql security definer set search_path = pg_catalog, public, auth
-as $$ begin
+as $$ declare actor_role text; target_role text; begin
   if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to manage this group'; end if;
-  if not exists (select 1 from public.conversation_members target join public.conversations c on c.id = target.conversation_id and c.kind = 'group' where target.conversation_id = p_conversation_id and target.user_id = p_member_id and target.group_role <> 'owner') then raise exception 'The owner cannot be removed'; end if;
-  if p_member_id <> auth.uid() and not exists (select 1 from public.conversation_members actor where actor.conversation_id = p_conversation_id and actor.user_id = auth.uid() and actor.group_role in ('owner','admin')) then raise exception 'Only owners and admins can remove other members'; end if;
+  select member.group_role into target_role from public.conversation_members member join public.conversations c on c.id = member.conversation_id and c.kind = 'group' where member.conversation_id = p_conversation_id and member.user_id = p_member_id;
+  if target_role is null then raise exception 'That member is not in this group'; end if;
+  if target_role = 'owner' then raise exception 'The owner cannot be removed'; end if;
+  if p_member_id <> auth.uid() then
+    select member.group_role into actor_role from public.conversation_members member where member.conversation_id = p_conversation_id and member.user_id = auth.uid();
+    if actor_role is null or actor_role not in ('owner','admin') then raise exception 'Only owners and admins can remove other members'; end if;
+    if actor_role <> 'owner' and target_role <> 'member' then raise exception 'Only the owner can remove a group admin'; end if;
+  end if;
   delete from public.conversation_members where conversation_id = p_conversation_id and user_id = p_member_id; return found;
 end $$;
 
@@ -2332,6 +2352,11 @@ begin
   join public.conversations conversation on conversation.id = member.conversation_id and conversation.kind = 'group'
   where member.conversation_id = p_conversation_id and member.user_id = auth.uid();
   if role_value is null then raise exception 'You are not a member of this group'; end if;
+  if role_value not in ('owner','admin') and exists (
+    select 1 from public.group_permissions permissions
+    where permissions.conversation_id = p_conversation_id
+      and permissions.allow_member_messages = false
+  ) then raise exception 'Only group admins can create tasks in this group'; end if;
   if char_length(trim(coalesce(p_title, ''))) not between 1 and 240 then raise exception 'A task must be between 1 and 240 characters'; end if;
   if p_due_at is not null and p_due_at <= now() then raise exception 'Choose a future task deadline'; end if;
   if p_assignee_id is not null and not exists (select 1 from public.conversation_members where conversation_id = p_conversation_id and user_id = p_assignee_id) then raise exception 'Assign tasks only to current group members'; end if;
@@ -2523,6 +2548,7 @@ language plpgsql security definer set search_path = pg_catalog, public, auth
 as $$
 declare conversation_id_value uuid;
 begin
+  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to respond to this event'; end if;
   if p_response not in ('going','maybe','declined') then raise exception 'Choose going, maybe, or declined'; end if;
   select event.conversation_id into conversation_id_value from public.group_events event where event.id = p_event_id;
   if conversation_id_value is null or not exists (select 1 from public.conversation_members member where member.conversation_id = conversation_id_value and member.user_id = auth.uid()) then raise exception 'You are not a member of this group'; end if;
@@ -2551,6 +2577,7 @@ as $$
 declare conversation_id_value uuid;
 begin
   select note.conversation_id into conversation_id_value from public.group_notes note where note.id = p_note_id;
+  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to edit this note'; end if;
   if conversation_id_value is null or not exists (select 1 from public.conversation_members member where member.conversation_id = conversation_id_value and member.user_id = auth.uid()) then raise exception 'You are not a member of this group'; end if;
   if not exists (select 1 from public.group_notes note where note.id = p_note_id and (note.created_by = auth.uid() or exists (select 1 from public.conversation_members member where member.conversation_id = note.conversation_id and member.user_id = auth.uid() and member.group_role in ('owner','admin')))) then raise exception 'Only the note author or a group admin can edit this note'; end if;
   update public.group_notes set title = trim(p_title), body = p_body, updated_by = auth.uid(), updated_at = now() where id = p_note_id;
@@ -2878,6 +2905,11 @@ begin
   join public.conversations conversation on conversation.id = member.conversation_id and conversation.kind = 'group'
   where member.conversation_id = p_conversation_id and member.user_id = auth.uid();
   if role_value is null then raise exception 'You are not a member of this group'; end if;
+  if role_value not in ('owner','admin') and exists (
+    select 1 from public.group_permissions permissions
+    where permissions.conversation_id = p_conversation_id
+      and permissions.allow_member_messages = false
+  ) then raise exception 'Only group admins can create tasks in this group'; end if;
   if char_length(trim(coalesce(p_title, ''))) not between 1 and 240 then raise exception 'A task must be between 1 and 240 characters'; end if;
   if p_due_at is not null and p_due_at <= now() then raise exception 'Choose a future task deadline'; end if;
   if p_assignee_id is not null and not exists (select 1 from public.conversation_members where conversation_id = p_conversation_id and user_id = p_assignee_id) then raise exception 'Assign tasks only to current group members'; end if;
@@ -3208,6 +3240,19 @@ begin
     select 1 from public.conversation_members
     where conversation_id = p_conversation_id and user_id = auth.uid()
   ) then raise exception 'You are not a member of this conversation'; end if;
+  if exists (
+    select 1
+    from public.conversations conversation
+    join public.conversation_members member
+      on member.conversation_id = conversation.id
+      and member.user_id = auth.uid()
+    join public.group_permissions permissions
+      on permissions.conversation_id = conversation.id
+    where conversation.id = p_conversation_id
+      and conversation.kind = 'group'
+      and member.group_role not in ('owner', 'admin')
+      and permissions.allow_member_messages = false
+  ) then raise exception 'Only group admins can send messages in this group'; end if;
   if char_length(trim(coalesce(p_body, ''))) > 4000 then raise exception 'Messages must be 4,000 characters or fewer'; end if;
   if char_length(trim(coalesce(p_body, ''))) = 0 and p_attachment_url is null then raise exception 'Add a message or attachment before sending'; end if;
   if p_attachment_url is null and p_attachment_mime is not null then raise exception 'Attachment metadata requires an attachment'; end if;
@@ -3319,7 +3364,7 @@ for each row execute function public.publish_mtu_public_profile_update();
 do $$
 declare table_name text;
 begin
-  foreach table_name in array array['profiles','mtu_public_profile_updates','campus_posts','campus_groups','campus_group_memberships','connection_requests','messages','message_reads'] loop
+  foreach table_name in array array['profiles','mtu_public_profile_updates','campus_posts','campus_groups','campus_group_memberships','connection_requests','messages','message_reads','group_polls','group_poll_options','group_poll_votes','group_tasks','group_events','group_event_attendees','group_announcements'] loop
     begin execute format('alter publication supabase_realtime add table public.%I', table_name); exception when duplicate_object then null; end;
   end loop;
 end;

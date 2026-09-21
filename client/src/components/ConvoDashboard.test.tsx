@@ -100,13 +100,13 @@ describe("ConvoDashboard", () => {
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
     expect(screen.queryByText("2")).toBeNull();
     expect(screen.queryByText("4")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
-    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-current")).toBe("page");
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(screen.getByRole("button", { name: "Search" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("moves the active compartment when switching views", () => {
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
-    const discover = screen.getByRole("button", { name: "Discover" });
+    const discover = screen.getByRole("button", { name: "Search" });
     expect(discover.className).toContain("dock-item");
     expect(discover.className).not.toContain("is-active");
     fireEvent.click(discover);
@@ -231,19 +231,20 @@ describe("expanded Convo workspace", () => {
     const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-2", display_name: "Mariam A.", student_id: "MTU-26-7K4Q2", programme: "Computer Science", department: "CBAS", level: "300L", status_text: "Available" }], error: null });
     render(<ConvoDashboard displayName="Ada Lovelace" major="Computer Science" studentId="MTU-SELF" level="300L" department="CBAS" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Open Convo home" }));
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(screen.getByText("Find your")).toBeTruthy();
     await waitFor(() => expect(onSearchStudents).toHaveBeenCalledWith(""));
     expect(await screen.findByText("Mariam A.")).toBeTruthy();
-    fireEvent.change(screen.getByRole("textbox", { name: "Search students" }), { target: { value: "MTU-26-7K4Q2" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Global search" }), { target: { value: "MTU-26-7K4Q2" } });
     await waitFor(() => expect(onSearchStudents).toHaveBeenCalledWith("MTU-26-7K4Q2"));
     expect(await screen.findByText("Mariam A.")).toBeTruthy();
   });
 
-  it("hydrates Global Search with verified directory results", async () => {
+  it("keeps one Search entry and hydrates the Discover directory results", async () => {
     const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-2", display_name: "Mariam A.", student_id: "MTU-26-7K4Q2", programme: "Computer Science", department: "CBAS", level: "300L", status_text: "Available" }], error: null });
     render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open Search" }));
+    expect(screen.getAllByRole("button", { name: "Search" })).toHaveLength(1);
+    fireEvent.click(screen.getAllByRole("button", { name: "Search" })[0]);
     expect(await screen.findByRole("textbox", { name: "Global search" })).toBeTruthy();
     await waitFor(() => expect(onSearchStudents).toHaveBeenCalledWith(""));
     expect(await screen.findByText("Mariam A.")).toBeTruthy();
@@ -254,8 +255,8 @@ describe("expanded Convo workspace", () => {
   it("excludes the signed-in profile when its generated public ID is searched", async () => {
     const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-1", display_name: "Ada", student_id: "MTU-SELF", is_self: true, programme: "Computer Science", department: "CBAS", level: "300L", status_text: "" }], error: null });
     render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" studentId="MTU-SELF" level="300L" department="CBAS" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Search students" }), { target: { value: "MTU-SELF" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Global search" }), { target: { value: "MTU-SELF" } });
     await waitFor(() => expect(onSearchStudents).toHaveBeenCalledWith("MTU-SELF"));
     expect(screen.queryByText("You")).toBeNull();
     expect(document.querySelector(".directory-grid .student-card")).toBeNull();
@@ -270,7 +271,7 @@ describe("expanded Convo workspace", () => {
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
     expect(screen.getAllByText("MTU-SELF").length).toBeGreaterThanOrEqual(1);
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Connect/ }).length).toBeGreaterThan(0));
     fireEvent.click(screen.getAllByRole("button", { name: /Connect/ })[0]);
     expect(await screen.findByText("Request sent")).toBeTruthy();
@@ -292,7 +293,7 @@ describe("live Convo callbacks", () => {
     const onLoadConversations = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1", title: "Mariam A.", kind: "direct", last_message: null }], error: null });
     const onSendMessage = vi.fn().mockResolvedValue({ ok: true, data: { id: "message-1", sender_id: "student-1", body: "See you in the library.", created_at: "2026-08-22T22:00:00.000Z" } });
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} onSearchStudents={onSearchStudents} onLoadConversations={onLoadConversations} onSendMessage={onSendMessage} />);
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     await waitFor(() => expect(onSearchStudents).toHaveBeenCalledWith(""));
     expect(screen.getByText("Mariam A.")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: /^Messages/ })[0]);
@@ -599,7 +600,7 @@ describe("dashboard refinement surfaces", () => {
   it("stops Discover loading and shows recovery guidance when the directory request rejects", async () => {
     const onSearchStudents = vi.fn(async () => { throw new Error("network stalled"); });
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(await screen.findByText("Directory needs one more setup step.")).toBeTruthy();
     expect(screen.queryByText("Searching MTU profiles…")).toBeNull();
   });
@@ -617,7 +618,7 @@ describe("dashboard refinement surfaces", () => {
   it("opens practical profile actions from a student's More menu", async () => {
     const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-2", display_name: "Mariam A.", student_id: "MTU-26-7K4Q2", programme: "Computer Science", department: "CBAS", level: "300L", status_text: "Available" }], error: null });
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(await screen.findByText("Mariam A.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More options for Mariam A." }));
     expect(screen.getByRole("menuitem", { name: /View profile/ })).toBeTruthy();

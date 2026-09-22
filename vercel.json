@@ -3,7 +3,19 @@
   "buildCommand": "pnpm build",
   "outputDirectory": "dist/public",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api" },
-    { "source": "/((?!robots\\.txt$|sitemap\\.xml$|assets/).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api(?:/|$)|assets/|robots\\.txt$|sitemap\\.xml$|manifest\\.webmanifest$|sw\\.js$).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/manifest.webmanifest",
+      "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [{ "key": "Content-Type", "value": "application/javascript" }]
+    }
   ]
 }

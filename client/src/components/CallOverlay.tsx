@@ -32,6 +32,7 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
   const durationRef = useRef(0);
   const callEventLoggedRef = useRef(false);
   const participantIdsRef = useRef<string[]>([]);
+  const connectedAtRef = useRef<number | null>(null);
 
   const setCallState = (next: ProviderCall | null) => { callRef.current = next; setCall(next); };
   const setIncomingState = (next: ProviderCall | null) => { incomingRef.current = next; setIncoming(next); };
@@ -69,7 +70,7 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
       try { await supabase.rpc("send_mtu_message", { p_conversation_id: active.conversation_id, p_body: `Call event: ${label}` }); } catch {}
     }
     if (terminalNoticeRef.current) { clearTimeout(terminalNoticeRef.current); terminalNoticeRef.current = null; }
-    setCallState(null); setIncomingState(null); setStatus("idle"); setError(""); setPeerName(""); setDuration(0); setMuted(false); setCameraOff(false); setScreenSharing(false); setMinimized(false);
+    setCallState(null); setIncomingState(null); setStatus("idle"); setError(""); setPeerName(""); setDuration(0); setMuted(false); setCameraOff(false); setScreenSharing(false); setMinimized(false); connectedAtRef.current = null;
     participantIdsRef.current = [];
     if (peerChannelRef.current && supabase) { void supabase.removeChannel(peerChannelRef.current); peerChannelRef.current = null; peerIdRef.current = ""; }
   };
@@ -99,6 +100,7 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
       if (answer) {
         try { await updateProviderCallStatus(supabase, next.id, "answered"); } catch {}
         try { await sendSignal(next.caller_id, "answer", { callId: next.id }); } catch {}
+        connectedAtRef.current = Date.now();
         setStatus("connected");
       }
     } catch (e) {
@@ -139,8 +141,8 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
   }, [supabase, userId, displayName]);
   useEffect(() => {
     if (status !== "connected") return;
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => { const elapsed = Math.floor((Date.now() - startedAt) / 1000); durationRef.current = elapsed; setDuration(elapsed); }, 1000);
+    if (!connectedAtRef.current) connectedAtRef.current = Date.now();
+    const timer = window.setInterval(() => { const elapsed = Math.floor((Date.now() - (connectedAtRef.current || Date.now())) / 1000); durationRef.current = elapsed; setDuration(elapsed); }, 1000);
     return () => window.clearInterval(timer);
   }, [status]);
   if (!call && !incoming && status === "idle") return null;
@@ -164,7 +166,7 @@ export function CallOverlay({ supabase, userId, displayName }: Props) {
   const toggleMinimized = () => { if (!incoming) setMinimized((value) => !value); };
   const formattedDuration = `${String(Math.floor(duration / 60)).padStart(2, "0")}:${String(duration % 60).padStart(2, "0")}`;
   const title = incoming ? `Incoming call from ${peerName || "MTU student"}` : status === "connected" ? peerName || "Connected" : status === "calling" ? `Calling ${peerName || "MTU student"}` : status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Reconnecting…" : status === "declined" ? "Call declined" : status === "ended" ? "Call ended" : status === "failed" ? "Call failed" : "Call";
-  const stateLabel = status === "connected" ? `● Connected · ${formattedDuration}` : status === "reconnecting" ? "Reconnecting…" : status === "declined" ? "Declined" : status === "ended" ? "Ended" : status === "failed" ? "Connection failed" : "";
+  const stateLabel = status === "connected" ? `● Connected · ${formattedDuration}` : status === "calling" ? "Calling…" : status === "ringing" ? "Ringing…" : status === "connecting" ? "Connecting…" : status === "reconnecting" ? "Reconnecting…" : status === "declined" ? "Declined" : status === "ended" ? "Ended" : status === "failed" ? "Connection failed" : "";
   const profileInitials = (peerName || (incoming ? "Incoming" : "Call")).split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "C";
   const callType = active?.call_type === "video" ? "Video call" : "Voice call";
   const callGroupLabel = participantIdsRef.current.length > 1 ? "Group call" : "Private call";

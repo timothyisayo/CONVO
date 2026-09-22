@@ -1463,6 +1463,7 @@ export default function Home() {
       <>
         <ConvoDashboard
           currentUserId={currentUserId}
+          focusClient={supabase}
           displayName={nickname || displayName}
           major={major}
           avatarUrl={avatarPreview}

@@ -132,13 +132,23 @@ export function registerProviderRoutes(app: Express) {
     if (!auth) return fail(res, 401, "Sign in again before starting a call.");
     const { conversationId, calleeId = null, callType } = req.body ?? {};
     if (typeof conversationId !== "string" || (calleeId !== null && typeof calleeId !== "string") || !["voice", "video"].includes(callType)) return fail(res, 400, "Invalid call request.");
-    const { data, error } = await (auth.client.rpc as any)("create_mtu_call", { p_conversation_id: conversationId, p_callee_id: calleeId, p_call_type: callType, p_room_name: `convo-${randomUUID()}` });
-    if (error || !data) {
-      console.error("Call creation failed", { code: error?.code });
-      return fail(res, error?.code === "42501" ? 403 : 400, "This student cannot receive calls right now.");
+    try {
+      const { data, error } = await (auth.client.rpc as any)("create_mtu_call", { p_conversation_id: conversationId, p_callee_id: calleeId, p_call_type: callType, p_room_name: `convo-${randomUUID()}` });
+      const call = Array.isArray(data) ? data[0] : data;
+      if (error || !call?.id) {
+        console.error("Call creation failed", { code: error?.code, message: error?.message });
+        return fail(res, error?.code === "42501" ? 403 : 400, error?.code === "42501" ? "This student cannot receive calls right now." : "The call request could not be created.");
+      }
+      const { data: participants, error: participantsError } = await auth.client.from("mtu_call_participants").select("user_id").eq("call_id", call.id);
+      if (participantsError) {
+        console.error("Call participants lookup failed", { code: participantsError.code, message: participantsError.message });
+        return fail(res, 502, "The call was created but its participants could not be loaded.");
+      }
+      return res.json({ call, participantIds: (participants || []).map((participant: { user_id: string }) => participant.user_id) });
+    } catch (error) {
+      console.error("Call creation request failed", error);
+      return fail(res, 502, "The call service could not start this call.");
     }
-    const { data: participants } = await auth.client.from("mtu_call_participants").select("user_id").eq("call_id", data.id);
-    return res.json({ call: data, participantIds: (participants || []).map((participant: { user_id: string }) => participant.user_id) });
   });
 
   app.post("/api/calls/status", async (req, res) => {

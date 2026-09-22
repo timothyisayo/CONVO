@@ -32,8 +32,8 @@ export const MESSAGE_AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 export const MESSAGE_AUDIO_TYPES = ["audio/webm", "audio/mp4", "audio/m4a", "audio/ogg", "audio/mpeg"] as const;
 export const MESSAGE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 export const MESSAGE_FILE_TYPES = ["application/pdf", "text/plain", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/zip"] as const;
-export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean };
-export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true };
+export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean; focus_hour: boolean };
+export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true, focus_hour: false };
 
 export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
   if (!value || typeof value !== "object") return { ...DEFAULT_PROFILE_VISIBILITY };
@@ -43,6 +43,7 @@ export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
     college: typeof candidate.college === "boolean" ? candidate.college : true,
     level: typeof candidate.level === "boolean" ? candidate.level : true,
     bio: typeof candidate.bio === "boolean" ? candidate.bio : true,
+    focus_hour: typeof candidate.focus_hour === "boolean" ? candidate.focus_hour : false,
   };
 }
 
@@ -128,6 +129,26 @@ export async function sendMtuConnectionRequest(client: Pick<SupabaseClient, "rpc
 export async function cancelMtuConnectionRequest(client: Pick<SupabaseClient, "rpc">, recipientId: string) {
   const { data, error } = await client.rpc("cancel_connection_request", { p_recipient_id: recipientId });
   return { data, error };
+}
+
+export type MtuFocusHour = { user_id: string; started_at: string; ends_at: string; duration_minutes: 30 | 45 | 60; active: boolean; ended_at?: string | null };
+export type MtuFocusParticipant = MtuFocusHour & { display_name: string | null; avatar_url: string | null; programme: string | null; level: string | null };
+
+export async function startMtuFocusHour(client: Pick<SupabaseClient, "rpc">, minutes: 30 | 45 | 60) {
+  const { data, error } = await client.rpc("start_mtu_focus_hour", { p_minutes: minutes });
+  return { data: (data || null) as MtuFocusHour | null, error };
+}
+export async function endMtuFocusHour(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("end_mtu_focus_hour");
+  return { data: (data || null) as MtuFocusHour | null, error };
+}
+export async function getMyMtuFocusHour(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("get_my_mtu_focus_hour");
+  return { data: (data || null) as MtuFocusHour | null, error };
+}
+export async function listMtuFocusHours(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("list_mtu_focus_hours");
+  return { data: (data || []) as MtuFocusParticipant[], error };
 }
 
 
@@ -636,6 +657,13 @@ export function subscribeToMtuPublicProfiles(client: Pick<SupabaseClient, "chann
   const channel = client.channel("convo-public-profile-updates")
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
+}
+
+export function subscribeToMtuFocusHours(client: Pick<SupabaseClient, "channel" | "removeChannel">, onChange: () => void) {
+  const channel = client.channel("convo-focus-hours")
+    .on("postgres_changes", { event: "*", schema: "public", table: "mtu_focus_hours" }, onChange)
     .subscribe();
   return () => { void client.removeChannel(channel); };
 }

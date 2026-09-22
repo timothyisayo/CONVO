@@ -579,7 +579,7 @@ describe("dashboard refinement surfaces", () => {
     render(<ConvoDashboard displayName="Ada" legalName="Ada Lovelace" major="Computer Science" programme="Computer Science" studentId="MTU-SELF" department="CBAS" level="300 Level" groups={[]} posts={[]} onUpdatePrivacy={onUpdatePrivacy} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
     fireEvent.click(screen.getByRole("switch", { name: "Show Programme to students" }));
-    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true }));
+    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true, focus_hour: false }));
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
     expect(screen.queryAllByText("Computer Science").length).toBe(1);
     expect(screen.getByText("Only the details you chose are shown.")).toBeTruthy();

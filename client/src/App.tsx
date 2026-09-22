@@ -10,7 +10,7 @@ import { Download, X } from "lucide-react";
 import { toast } from "sonner";
 
 type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
-type InstallState = "available" | "unavailable" | "installed";
+type InstallState = "available" | "instructions" | "installed";
 
 function InstallAppPrompt() {
   const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null);
@@ -19,7 +19,7 @@ function InstallAppPrompt() {
     Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
   );
   const [dismissed, setDismissed] = useState(() => window.localStorage.getItem("convo-install-dismissed") === "true");
-  const installState: InstallState = isInstalled ? "installed" : installEvent ? "available" : "unavailable";
+  const installState: InstallState = isInstalled ? "installed" : installEvent ? "available" : "instructions";
 
   const publishInstallState = (state: InstallState) => {
     window.dispatchEvent(new CustomEvent("convo-install-state", { detail: state }));
@@ -49,8 +49,11 @@ function InstallAppPrompt() {
     const handleInstallRequest = () => {
       if (isInstalled) return;
       if (!installEvent) {
-        toast("Install is unavailable in this browser", {
-          description: "Open Convo in a supported browser and use its Add to Home Screen or Install option.",
+        const isApple = /Macintosh|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        toast("Install Convo from your browser", {
+          description: isApple
+            ? "Use Share, then Add to Dock on Safari, or Add to Home Screen on iPhone/iPad."
+            : "Open your browser menu and choose Install Convo, Install page as app, or Add to Home screen.",
         });
         return;
       }

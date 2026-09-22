@@ -22,9 +22,9 @@ vi.mock("@/lib/supabase", () => ({
   supabase: { auth, from: () => ({ upsert: vi.fn(async () => ({ error: null })) }), storage: { from: () => ({ upload: vi.fn(async () => ({ error: null })), getPublicUrl: () => ({ data: { publicUrl: "" } }) }) } },
   supabaseConfigured: true,
   supabaseSetupMessage: () => "setup",
-  DEFAULT_PROFILE_VISIBILITY: { programme: true, college: true, level: true, bio: true },
+  DEFAULT_PROFILE_VISIBILITY: { programme: true, college: true, level: true, bio: true, focus_hour: false },
   isMtuEmail: (email: string) => email.toLowerCase().endsWith("@mtu.edu.ng"),
-  getProfileMetadata: (user: any) => ({ displayName: user?.user_metadata?.display_name || "", nickname: user?.user_metadata?.nickname || "", college: user?.user_metadata?.college || "", major: user?.user_metadata?.major || "", avatarUrl: user?.user_metadata?.avatar_url || "", studentId: user?.user_metadata?.student_id || "", level: user?.user_metadata?.level || "", department: user?.user_metadata?.department || "", programme: user?.user_metadata?.programme || user?.user_metadata?.major || "", bio: user?.user_metadata?.bio || "", visibility: user?.user_metadata?.profile_visibility || { programme: true, college: true, level: true, bio: true } }),
+  getProfileMetadata: (user: any) => ({ displayName: user?.user_metadata?.display_name || "", nickname: user?.user_metadata?.nickname || "", college: user?.user_metadata?.college || "", major: user?.user_metadata?.major || "", avatarUrl: user?.user_metadata?.avatar_url || "", studentId: user?.user_metadata?.student_id || "", level: user?.user_metadata?.level || "", department: user?.user_metadata?.department || "", programme: user?.user_metadata?.programme || user?.user_metadata?.major || "", bio: user?.user_metadata?.bio || "", visibility: user?.user_metadata?.profile_visibility || { programme: true, college: true, level: true, bio: true, focus_hour: false } }),
   uploadAvatar: uploadAvatarMock,
   listMtuConnectionRequests: vi.fn(async () => ({ data: [], error: null })),
   listMtuConversations: vi.fn(async () => ({ data: [], error: null })),
@@ -33,6 +33,11 @@ vi.mock("@/lib/supabase", () => ({
   syncMyMtuDirectoryProfile: syncProfileMock,
   subscribeToMtuPublicProfiles: vi.fn(() => () => undefined),
   subscribeToMtuAllMessages: vi.fn(() => () => undefined),
+  subscribeToMtuFocusHours: vi.fn(() => () => undefined),
+  getMyMtuFocusHour: vi.fn(async () => ({ data: null, error: null })),
+  listMtuFocusHours: vi.fn(async () => ({ data: [], error: null })),
+  startMtuFocusHour: vi.fn(async () => ({ data: null, error: null })),
+  endMtuFocusHour: vi.fn(async () => ({ data: null, error: null })),
 }));
 
 vi.mock("@/lib/campus-data", () => ({ useCampusData: () => ({ stories: [], posts: [], groups: [], joinedGroupIds: [], joinGroup: vi.fn(async () => ({ ok: true })), isLive: true, isLoading: false, error: null, mode: "live" }) }));

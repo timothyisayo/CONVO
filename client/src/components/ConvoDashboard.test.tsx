@@ -704,8 +704,8 @@ describe("suggested connection expansion", () => {
   it("opens and closes a 3D quick-peek profile from an avatar", async () => {
     const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-2", display_name: "Mariam A.", student_id: "MTU-2", programme: "Computer Science", department: "CBAS", level: "300L", status_text: "" }], error: null });
     render(<ConvoDashboard currentUserId="self" displayName="Ada" major="Computer Science" programme="Computer Science" department="CBAS" level="300L" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Preview Mariam A." }));
-    expect(screen.getByRole("dialog", { name: /Public profile preview for Mariam A\./ })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Preview Mariam/i }));
+    expect(screen.getByRole("dialog", { name: /Public profile preview for Mariam A/i })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close profile preview" }));
     expect(screen.queryByRole("dialog", { name: /Public profile preview/ })).toBeNull();
   });

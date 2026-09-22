@@ -1,11 +1,9 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "server/vercel.ts", "use": "@vercel/node" },
-    { "src": "dist/public/**", "use": "@vercel/static" }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/server/vercel.ts" },
-    { "src": "/(.*)", "dest": "/index.html" }
+  "buildCommand": "pnpm build",
+  "outputDirectory": "dist/public",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api" },
+    { "source": "/((?!robots\\.txt$|sitemap\\.xml$|assets/).*)", "destination": "/index.html" }
   ]
 }

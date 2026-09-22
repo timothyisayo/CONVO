@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { registerProviderRoutes } from "./providerRoutes";
 import { registerVaultRoutes } from "./vaultRoutes";
 
@@ -8,7 +8,7 @@ const app = express();
 app.set("trust proxy", 1);
 
 const allowedOrigin = process.env.CORS_ORIGIN?.trim();
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
   if (!origin || !allowedOrigin) return next();
   if (origin !== allowedOrigin) return res.status(403).json({ error: "Origin is not allowed." });

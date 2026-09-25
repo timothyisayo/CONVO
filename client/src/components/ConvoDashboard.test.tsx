@@ -345,7 +345,7 @@ describe("live message callbacks", () => {
     expect(screen.queryByRole("button", { name: "Report student" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open student profile" }));
     expect(await screen.findByRole("dialog", { name: "Student profile" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy my public profile link" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy public student ID" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Search this chat" })).toBeTruthy();
     expect(document.querySelector("[data-conversation-notifications]")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Name this chat" })).toBeTruthy();
@@ -579,7 +579,7 @@ describe("dashboard refinement surfaces", () => {
     render(<ConvoDashboard displayName="Ada" legalName="Ada Lovelace" major="Computer Science" programme="Computer Science" studentId="MTU-SELF" department="CBAS" level="300 Level" groups={[]} posts={[]} onUpdatePrivacy={onUpdatePrivacy} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
     fireEvent.click(screen.getByRole("switch", { name: "Show Programme to students" }));
-    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true, focus_hour: false }));
+    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false }));
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
     expect(screen.queryAllByText("Computer Science").length).toBe(1);
     expect(screen.getByText("Only the details you chose are shown.")).toBeTruthy();
@@ -593,7 +593,7 @@ describe("dashboard refinement surfaces", () => {
     expect(screen.getByText("Your Convo profile")).toBeTruthy();
     expect(screen.getByText("Public student ID")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy student ID" })).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Copy public profile link" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy public student ID" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Update details/i })).toBeTruthy();
   });
 

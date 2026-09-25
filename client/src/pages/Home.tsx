@@ -1,5 +1,5 @@
 // Style contract: Convo is a mature warm-pastel student social world. Scroll-linked scenes, tactile controls, restrained depth, and live campus activity. Avoid blue-heavy neon, childish cartoon styling, and generic centered layouts.
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Bell,
@@ -87,6 +87,9 @@ import {
   listMtuGroupMembers,
   listMtuMessageInteractions,
   listMtuMessages,
+  listMtuNotifications,
+  markMtuNotificationRead,
+  clearMtuNotifications,
   markMtuConversationRead,
   reportMtuStudent,
   reviewMtuGroupJoinRequest,
@@ -96,9 +99,12 @@ import {
   searchMtuConversationMessages,
   syncMyMtuDirectoryProfile,
   sendMtuConnectionRequest,
+  listMtuApprovedPeople,
+  setMtuApprovedPerson,
   sendMtuMessage,
   startMtuDirectConversation,
   subscribeToMtuAllMessages,
+  subscribeToMtuNotifications,
   subscribeToMtuPublicProfiles,
   subscribeToMtuConversation,
   subscribeToMtuMessages,
@@ -320,6 +326,7 @@ export default function Home() {
   }, [resendCooldown]);
 
   useEffect(() => {
+    if (showDashboard) return;
     const onScroll = () => {
       const max = document.documentElement.scrollHeight - window.innerHeight;
       const progress = max ? Math.min(1, window.scrollY / max) : 0;
@@ -334,7 +341,7 @@ export default function Home() {
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [showDashboard]);
 
   const goTo = (id: string) =>
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
@@ -932,6 +939,16 @@ export default function Home() {
       ? { ok: false, error: result.error.message }
       : { ok: true };
   };
+  const loadApprovedPeople = async () => {
+    if (!supabase) return { data: [], error: "Sign in to manage approved people." };
+    const result = await listMtuApprovedPeople(supabase);
+    return { data: result.data, error: result.error?.message || null };
+  };
+  const setApprovedPerson = async (studentId: string, approved: boolean) => {
+    if (!supabase) return { ok: false, error: "Sign in to manage approved people." };
+    const result = await setMtuApprovedPerson(supabase, studentId, approved);
+    return result.error ? { ok: false, error: result.error.message } : { ok: true };
+  };
   const cancelConnectionRequest = async (recipientId: string) => {
     if (!supabase)
       return { ok: false, error: "Sign in to manage connection requests." };
@@ -977,11 +994,11 @@ export default function Home() {
     const result = await setMtuGroupPrivate(supabase, conversationId, isPrivate);
     return result.error ? { ok: false, error: result.error.message } : { ok: true };
   };
-  const loadGroupMembers = async (conversationId: string) => {
+  const loadGroupMembers = useCallback(async (conversationId: string) => {
     if (!supabase) return { data: [], error: null };
     const result = await listMtuGroupMembers(supabase, conversationId);
     return result.error ? { data: [], error: result.error } : { data: result.data, error: null };
-  };
+  }, []);
   const addGroupMembers = async (conversationId: string, memberIds: string[]) => {
     if (!supabase) return { ok: false, error: "Sign in to add group members.", added: 0 };
     const result = await addMtuGroupMembers(supabase, conversationId, memberIds);
@@ -1165,11 +1182,11 @@ export default function Home() {
     const result = await createMtuGroupEvent(supabase, conversationId, title, description, startsAt, location);
     return result.error ? { data: null, error: { message: result.error.message } } : { data: result.data, error: null };
   };
-  const loadGroupEvents = async (conversationId: string) => {
+  const loadGroupEvents = useCallback(async (conversationId: string) => {
     if (!supabase) return { data: [], error: { message: "Sign in to view group events." } };
     const result = await listMtuGroupEvents(supabase, conversationId);
     return result.error ? { data: [], error: { message: result.error.message } } : { data: result.data, error: null };
-  };
+  }, []);
   const updateGroupEvent = async (eventId: string, title: string, description: string, startsAt: string, location: string) => {
     if (!supabase) return { ok: false, error: "Sign in to edit this event." };
     const result = await updateMtuGroupEvent(supabase, eventId, title, description, startsAt, location);
@@ -1210,11 +1227,11 @@ export default function Home() {
     const result = await createMtuGroupAnnouncement(supabase, conversationId, title, body, expiresAt);
     return result.error ? { data: null, error: { message: result.error.message } } : { data: result.data, error: null };
   };
-  const loadGroupAnnouncements = async (conversationId: string) => {
+  const loadGroupAnnouncements = useCallback(async (conversationId: string) => {
     if (!supabase) return { data: [], error: { message: "Sign in to view announcements." } };
     const result = await listMtuGroupAnnouncements(supabase, conversationId);
     return result.error ? { data: [], error: { message: result.error.message } } : { data: result.data, error: null };
-  };
+  }, []);
   const updateGroupAnnouncement = async (announcementId: string, title: string, body: string, expiresAt: string | null) => {
     if (!supabase) return { ok: false, error: "Sign in to edit this announcement." };
     const result = await updateMtuGroupAnnouncement(supabase, announcementId, title, body, expiresAt);
@@ -1230,11 +1247,11 @@ export default function Home() {
     const result = await createMtuGroupPoll(supabase, conversationId, question, options, closesAt, anonymousVoters);
     return result.error ? { data: null, error: result.error.message } : { data: result.data, error: null };
   };
-  const loadGroupPolls = async (conversationId: string) => {
+  const loadGroupPolls = useCallback(async (conversationId: string) => {
     if (!supabase) return { data: [], error: "Sign in to view polls." };
     const result = await listMtuGroupPolls(supabase, conversationId);
     return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
-  };
+  }, []);
   const updateGroupPoll = async (pollId: string, question: string, options: string[], closesAt: string | null, anonymousVoters: boolean) => {
     if (!supabase) return { ok: false, error: "Sign in to edit this poll." };
     const result = await updateMtuGroupPoll(supabase, pollId, question, options, closesAt, anonymousVoters);
@@ -1260,11 +1277,11 @@ export default function Home() {
     const result = await createMtuGroupTask(supabase, conversationId, title, assigneeId, dueAt);
     return result.error ? { data: null, error: result.error.message } : { data: result.data, error: null };
   };
-  const loadGroupTasks = async (conversationId: string) => {
+  const loadGroupTasks = useCallback(async (conversationId: string) => {
     if (!supabase) return { data: [], error: "Sign in to view group tasks." };
     const result = await listMtuGroupTasks(supabase, conversationId);
     return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
-  };
+  }, []);
   const updateGroupTask = async (taskId: string, title: string, assigneeId: string | null, dueAt: string | null) => {
     if (!supabase) return { ok: false, error: "Sign in to edit this task." };
     const result = await updateMtuGroupTask(supabase, taskId, title, assigneeId, dueAt);
@@ -1278,7 +1295,7 @@ export default function Home() {
   const setGroupTaskCompleted = async (taskId: string, completed: boolean) => {
     if (!supabase) return { ok: false, error: "Sign in to update a task." };
     const result = await setMtuGroupTaskCompleted(supabase, taskId, completed);
-    return result.error ? { ok: false, error: result.error.message } : { ok: result.data };
+    return result.error ? { ok: false, error: result.error.message } : { ok: true };
   };
   const rotateGroupInvite = async (conversationId: string) => {
     if (!supabase) return { data: null, error: "Sign in to rotate this invitation." };
@@ -1304,10 +1321,10 @@ export default function Home() {
       }
     };
   };
-  const subscribeToGroupActivity = (conversationId: string, onChange: () => void) => {
+  const subscribeToGroupActivity = useCallback((conversationId: string, onChange: () => void) => {
     if (!supabase) return () => undefined;
     return subscribeToMtuGroupActivity(supabase, conversationId, onChange);
-  };
+  }, []);
   const acceptConnectionRequest = async (requestId: string) => {
     if (!supabase)
       return { ok: false, error: "Sign in to accept a connection request." };
@@ -1364,7 +1381,13 @@ export default function Home() {
   const loadSharedFiles = async (conversationId: string) => {
     if (!supabase) return { data: [], error: "Sign in to view shared files." };
     const result = await listMtuSharedFiles(supabase, conversationId);
-    return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
+    if (result.error) return { data: [], error: result.error.message };
+    const data = await Promise.all(result.data.map(async (file) => {
+      if (!file.attachment_path) return file;
+      const secured = await createMtuAttachmentSignedUrl(supabase!, file.attachment_path);
+      return secured.url ? { ...file, attachment_url: secured.url } : file;
+    }));
+    return { data, error: null };
   };
   const loadConversations = async () => {
     if (!supabase) return { data: [], error: null };
@@ -1384,6 +1407,25 @@ export default function Home() {
     if (!supabase) return { error: null };
     const result = await markMtuConversationRead(supabase, conversationId);
     return { error: result.error ? { message: result.error.message } : null };
+  };
+  const loadNotifications = async () => {
+    if (!supabase) return { data: [], error: "Sign in to view notifications." };
+    const result = await listMtuNotifications(supabase);
+    return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
+  };
+  const markNotificationRead = async (notificationId: string) => {
+    if (!supabase) return { error: "Sign in to update notifications." };
+    const result = await markMtuNotificationRead(supabase, notificationId);
+    return { error: result.error?.message || null };
+  };
+  const clearNotifications = async () => {
+    if (!supabase) return { error: "Sign in to clear notifications." };
+    const result = await clearMtuNotifications(supabase);
+    return { error: result.error?.message || null };
+  };
+  const subscribeToNotifications = (onNotification: (notification: Record<string, unknown>) => void) => {
+    if (!supabase || !currentUserId || typeof subscribeToMtuNotifications !== "function") return () => undefined;
+    return subscribeToMtuNotifications(supabase, currentUserId, onNotification);
   };
   const subscribeToPublicProfiles = (onProfile: (profile: Record<string, unknown>) => void) => {
     if (!supabase) return () => undefined;
@@ -1463,7 +1505,6 @@ export default function Home() {
       <>
         <ConvoDashboard
           currentUserId={currentUserId}
-          focusClient={supabase}
           displayName={nickname || displayName}
           major={major}
           avatarUrl={avatarPreview}
@@ -1513,6 +1554,10 @@ export default function Home() {
           onSetPrivacySettings={supabase ? updatePrivacySettings : undefined}
           notificationsEnabled={notificationsEnabled}
           onSetNotificationsEnabled={(enabled) => { setNotificationsEnabled(enabled); window.localStorage.setItem("convo-notifications-enabled", String(enabled)); }}
+          onLoadNotifications={supabase ? loadNotifications : undefined}
+          onMarkNotificationRead={supabase ? markNotificationRead : undefined}
+          onClearNotifications={supabase ? clearNotifications : undefined}
+          onSubscribeToNotifications={supabase ? subscribeToNotifications : undefined}
           onLoadConversationNotificationPreference={supabase ? loadConversationNotificationPreference : undefined}
           onSetConversationNotificationPreference={supabase ? updateConversationNotificationPreference : undefined}
           onLoadConversationAppearance={supabase ? loadConversationAppearance : undefined}
@@ -1580,12 +1625,14 @@ export default function Home() {
           onUpdateProfile={updateProfile}
           onUpdateAvatar={updateAvatar}
           onUpdatePrivacy={updatePrivacy}
+          onLoadApprovedPeople={supabase ? loadApprovedPeople : undefined}
+          onSetApprovedPerson={supabase ? setApprovedPerson : undefined}
           onAskAssistant={supabase ? askAssistant : undefined}
           vaultClient={supabase}
           isEntering={dashboardRevealed}
           isExiting={dashboardExiting}
         />
-        <CallOverlay supabase={supabase} userId={currentUserId} displayName={nickname || displayName} />
+        <CallOverlay supabase={supabase} userId={currentUserId} displayName={nickname || displayName} avatarUrl={avatarPreview} />
         {showCelebration && (
           <ConvoSuccessCelebration
             nickname={nickname || displayName}

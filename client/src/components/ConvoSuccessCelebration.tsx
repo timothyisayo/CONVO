@@ -17,8 +17,8 @@ export function ConvoSuccessCelebration({ nickname, onDone }: Props) {
     let disposed = false;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const context = canvas.getContext("2d");
-    const particles = Array.from({ length: reduce ? 12 : 32 }, (_, index) => ({ angle: index * 0.72, radius: 40 + (index % 7) * 19, speed: 0.006 + (index % 4) * 0.002, size: 1.5 + (index % 3), tone: index % 2 ? "#e8a16c" : "#f4d8a8" }));
-    const confetti = Array.from({ length: reduce ? 0 : 42 }, (_, index) => ({ x: (index * 37) % 100, y: -10 - (index % 8) * 9, velocity: 0.22 + (index % 5) * 0.045, drift: Math.sin(index * 1.7) * 0.18, width: 3 + (index % 3), height: 7 + (index % 4) * 2, rotation: index * 0.6, spin: 0.025 + (index % 4) * 0.012, tone: ["#e8a16c", "#f4d8a8", "#cf765d", "#f7c6a5"][index % 4] }));
+    const particles = Array.from({ length: reduce ? 12 : 32 }, (_, index) => ({ angle: index * 0.72, radius: 40 + (index % 7) * 19, speed: 0.006 + (index % 4) * 0.002, size: 1.5 + (index % 3), tone: index % 2 ? "#7A5538" : "#C39A5B" }));
+    const confetti = Array.from({ length: reduce ? 0 : 42 }, (_, index) => ({ x: (index * 37) % 100, y: -10 - (index % 8) * 9, velocity: 0.22 + (index % 5) * 0.045, drift: Math.sin(index * 1.7) * 0.18, width: 3 + (index % 3), height: 7 + (index % 4) * 2, rotation: index * 0.6, spin: 0.025 + (index % 4) * 0.012, tone: ["#7A5538", "#C39A5B", "#1F5A3A", "#B98B72"][index % 4] }));
     let renderer: THREE.WebGLRenderer | null = null;
     let scene: THREE.Scene | null = null;
     let camera: THREE.PerspectiveCamera | null = null;
@@ -32,7 +32,7 @@ export function ConvoSuccessCelebration({ nickname, onDone }: Props) {
       camera.position.z = 5.8;
       group = new THREE.Group();
       scene.add(group);
-      const nodeMaterial = new THREE.MeshBasicMaterial({ color: 0xf2b57d, transparent: true, opacity: 0.9 });
+      const nodeMaterial = new THREE.MeshBasicMaterial({ color: 0x7a5538, transparent: true, opacity: 0.9 });
       const nodeGeometry = new THREE.SphereGeometry(0.075, 12, 12);
       const nodes: THREE.Vector3[] = [];
       for (let index = 0; index < 9; index += 1) {
@@ -42,13 +42,13 @@ export function ConvoSuccessCelebration({ nickname, onDone }: Props) {
         mesh.position.copy(point);
         group.add(mesh);
       }
-      const lineMaterial = new THREE.LineBasicMaterial({ color: 0xf5d9b2, transparent: true, opacity: 0.28 });
+      const lineMaterial = new THREE.LineBasicMaterial({ color: 0xefe6d2, transparent: true, opacity: 0.28 });
       for (let index = 0; index < nodes.length; index += 1) {
         const next = nodes[(index + 1) % nodes.length];
         const geometry = new THREE.BufferGeometry().setFromPoints([nodes[index], next]);
         group.add(new THREE.Line(geometry, lineMaterial));
       }
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.7, 0.012, 8, 96), new THREE.MeshBasicMaterial({ color: 0xd98766, transparent: true, opacity: 0.5 }));
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.7, 0.012, 8, 96), new THREE.MeshBasicMaterial({ color: 0x7a5538, transparent: true, opacity: 0.5 }));
       ring.rotation.x = Math.PI / 2.8;
       group.add(ring);
     } catch {

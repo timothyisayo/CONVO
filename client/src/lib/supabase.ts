@@ -32,8 +32,8 @@ export const MESSAGE_AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 export const MESSAGE_AUDIO_TYPES = ["audio/webm", "audio/mp4", "audio/m4a", "audio/ogg", "audio/mpeg"] as const;
 export const MESSAGE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 export const MESSAGE_FILE_TYPES = ["application/pdf", "text/plain", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/zip"] as const;
-export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean; focus_hour: boolean };
-export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true, focus_hour: false };
+export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean; incognito: boolean; allow_exact_id_lookup: boolean };
+export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false };
 
 export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
   if (!value || typeof value !== "object") return { ...DEFAULT_PROFILE_VISIBILITY };
@@ -43,7 +43,8 @@ export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
     college: typeof candidate.college === "boolean" ? candidate.college : true,
     level: typeof candidate.level === "boolean" ? candidate.level : true,
     bio: typeof candidate.bio === "boolean" ? candidate.bio : true,
-    focus_hour: typeof candidate.focus_hour === "boolean" ? candidate.focus_hour : false,
+    incognito: typeof candidate.incognito === "boolean" ? candidate.incognito : false,
+    allow_exact_id_lookup: typeof candidate.allow_exact_id_lookup === "boolean" ? candidate.allow_exact_id_lookup : false,
   };
 }
 
@@ -131,26 +132,17 @@ export async function cancelMtuConnectionRequest(client: Pick<SupabaseClient, "r
   return { data, error };
 }
 
-export type MtuFocusHour = { user_id: string; started_at: string; ends_at: string; duration_minutes: 30 | 45 | 60; active: boolean; ended_at?: string | null };
-export type MtuFocusParticipant = MtuFocusHour & { display_name: string | null; avatar_url: string | null; programme: string | null; level: string | null };
+export type MtuApprovedPerson = { approved_id: string; display_name: string | null; student_id: string | null; avatar_url: string | null; approved_at: string };
 
-export async function startMtuFocusHour(client: Pick<SupabaseClient, "rpc">, minutes: 30 | 45 | 60) {
-  const { data, error } = await client.rpc("start_mtu_focus_hour", { p_minutes: minutes });
-  return { data: (data || null) as MtuFocusHour | null, error };
-}
-export async function endMtuFocusHour(client: Pick<SupabaseClient, "rpc">) {
-  const { data, error } = await client.rpc("end_mtu_focus_hour");
-  return { data: (data || null) as MtuFocusHour | null, error };
-}
-export async function getMyMtuFocusHour(client: Pick<SupabaseClient, "rpc">) {
-  const { data, error } = await client.rpc("get_my_mtu_focus_hour");
-  return { data: (data || null) as MtuFocusHour | null, error };
-}
-export async function listMtuFocusHours(client: Pick<SupabaseClient, "rpc">) {
-  const { data, error } = await client.rpc("list_mtu_focus_hours");
-  return { data: (data || []) as MtuFocusParticipant[], error };
+export async function listMtuApprovedPeople(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("list_mtu_approved_people");
+  return { data: (data || []) as MtuApprovedPerson[], error };
 }
 
+export async function setMtuApprovedPerson(client: Pick<SupabaseClient, "rpc">, studentId: string, approved: boolean) {
+  const { data, error } = await client.rpc("set_mtu_approved_person", { p_student_id: studentId, p_approved: approved });
+  return { data, error };
+}
 
 export function validateMessageImage(file: Pick<File, "type" | "size"> | null) {
   if (!file) return { valid: true as const, error: "" };
@@ -245,7 +237,7 @@ export async function deleteMtuMessage(client: Pick<SupabaseClient, "rpc">, mess
   return { data, error };
 }
 
-export type MtuConversation = { id: string; kind: string; title: string | null; counterpart_id?: string | null; group_image_url?: string | null; group_category?: string | null; ended_at?: string | null; counterpart_last_seen_at?: string | null; updated_at: string; last_message: string | null; last_message_at: string | null; unread_count: number; is_pinned?: boolean; is_archived?: boolean; muted_until?: string | null; draft_body?: string | null };
+export type MtuConversation = { id: string; kind: string; title: string | null; counterpart_id?: string | null; counterpart_avatar_url?: string | null; group_image_url?: string | null; group_category?: string | null; ended_at?: string | null; counterpart_last_seen_at?: string | null; updated_at: string; last_message: string | null; last_message_at: string | null; unread_count: number; is_pinned?: boolean; is_archived?: boolean; muted_until?: string | null; draft_body?: string | null };
 
 export async function listMtuConversations(client: Pick<SupabaseClient, "rpc">) {
   const { data, error } = await client.rpc("list_mtu_conversations_v3");
@@ -452,7 +444,7 @@ export async function listMtuSharedFiles(client: Pick<SupabaseClient, "rpc">, co
   return { data: (data || []) as MtuSharedFile[], error };
 }
 
-export type MtuGroupMember = { user_id: string; display_name: string; student_id: string; group_role: "owner" | "admin" | "member" };
+export type MtuGroupMember = { user_id: string; display_name: string; student_id: string; avatar_url?: string | null; group_role: "owner" | "admin" | "member" };
 
 export async function listMtuGroupMembers(client: Pick<SupabaseClient, "rpc">, conversationId: string) {
   const { data, error } = await client.rpc("list_mtu_group_members", { p_conversation_id: conversationId });
@@ -653,17 +645,45 @@ export async function markMtuConversationRead(client: Pick<SupabaseClient, "rpc"
   return { data, error };
 }
 
-export function subscribeToMtuPublicProfiles(client: Pick<SupabaseClient, "channel" | "removeChannel">, onProfile: (profile: Record<string, unknown>) => void) {
-  const channel = client.channel("convo-public-profile-updates")
-    .on("postgres_changes", { event: "INSERT", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
-    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
+export type MtuNotification = {
+  id: string;
+  recipient_id: string;
+  notification_type: "message" | "connection" | "group" | "call" | "poll" | "task" | "event" | "announcement";
+  title: string;
+  body: string;
+  conversation_id: string | null;
+  entity_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  read_at: string | null;
+};
+
+export async function listMtuNotifications(client: Pick<SupabaseClient, "from">, limit = 100) {
+  const result = await client.from("mtu_notifications").select("*").order("created_at", { ascending: false }).limit(limit);
+  return { data: (result.data || []) as MtuNotification[], error: result.error };
+}
+
+export async function markMtuNotificationRead(client: Pick<SupabaseClient, "from">, notificationId: string) {
+  const result = await client.from("mtu_notifications").update({ read_at: new Date().toISOString() }).eq("id", notificationId);
+  return { data: result.data, error: result.error };
+}
+
+export async function clearMtuNotifications(client: Pick<SupabaseClient, "from">) {
+  const result = await client.from("mtu_notifications").delete().not("read_at", "is", null);
+  return { data: result.data, error: result.error };
+}
+
+export function subscribeToMtuNotifications(client: Pick<SupabaseClient, "channel" | "removeChannel">, recipientId: string, onNotification: (notification: Record<string, unknown>) => void) {
+  const channel = client.channel(`convo-notifications-${recipientId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "mtu_notifications", filter: `recipient_id=eq.${recipientId}` }, (payload) => onNotification(((payload as { new?: Record<string, unknown> }).new || {}) as Record<string, unknown>))
     .subscribe();
   return () => { void client.removeChannel(channel); };
 }
 
-export function subscribeToMtuFocusHours(client: Pick<SupabaseClient, "channel" | "removeChannel">, onChange: () => void) {
-  const channel = client.channel("convo-focus-hours")
-    .on("postgres_changes", { event: "*", schema: "public", table: "mtu_focus_hours" }, onChange)
+export function subscribeToMtuPublicProfiles(client: Pick<SupabaseClient, "channel" | "removeChannel">, onProfile: (profile: Record<string, unknown>) => void) {
+  const channel = client.channel("convo-public-profile-updates")
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
+    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "mtu_public_profile_updates" }, (payload) => onProfile((payload as { new: Record<string, unknown> }).new))
     .subscribe();
   return () => { void client.removeChannel(channel); };
 }

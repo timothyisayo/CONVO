@@ -2,28 +2,14 @@ import { describe, expect, it } from "vitest";
 import { getCampusPanelState, joinCampusGroup } from "./campus-data";
 import { CONVO_ONBOARDING_SEQUENCE, saveMtuProfile, createMtuGroupConversation, createMtuGroupInvite, createMtuGroupPoll, createMtuGroupTask, deleteMtuMessage, editMtuMessage, getMtuConversationNotificationPreference, getMtuPrivacySettings, getMtuGroupPermissions, getProfileMetadata, joinMtuGroupInvite, listMtuGroupPolls, listMtuGroupTasks, listMtuSavedMessages, markMtuConversationRead, rotateMtuGroupInvite, searchMtuConversationMessages, sendMtuMessage, setMtuConversationNotificationPreference, setMtuConversationRailState, setMtuPrivacySettings, setMtuGroupPermissions, setMtuGroupTaskCompleted, createMtuGroupEvent, listMtuGroupEvents, setMtuGroupEventResponse, createMtuGroupNote, updateMtuGroupNote, listMtuGroupNotes, createMtuGroupAnnouncement, listMtuGroupAnnouncements, getMtuConversationAppearance, setMtuConversationAppearance, startMtuDirectConversation, subscribeToMtuAllMessages, subscribeToMtuConversation, subscribeToMtuMessages, syncMyMtuDirectoryProfile, uploadAvatar, uploadMessageImage, validateAvatarFile, validateMessageAttachment, validateMessageImage, castMtuGroupPollVote, revokeMtuGroupInvite } from "./supabase";
 import { isMtuEmail } from "./supabase";
-import { listMtuBlockedStudents, unblockMtuStudent, startMtuFocusHour, endMtuFocusHour, listMtuFocusHours } from "./supabase";
+import { listMtuBlockedStudents, unblockMtuStudent } from "./supabase";
+import { listMtuApprovedPeople, normalizeProfileVisibility, setMtuApprovedPerson } from "./supabase";
 
 describe("Supabase auth persistence", () => {
   it("persists the session without storing a password", async () => {
     const { SUPABASE_AUTH_OPTIONS } = await import("./supabase");
     expect(SUPABASE_AUTH_OPTIONS).toMatchObject({ persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "convo-auth" });
     expect(SUPABASE_AUTH_OPTIONS).not.toHaveProperty("password");
-  });
-
-  describe("Focus Hour helpers", () => {
-    it("uses the typed focus-hour RPC contract", async () => {
-      const calls: unknown[] = [];
-      const client = { rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: name === "list_mtu_focus_hours" ? [] : { user_id: "me", started_at: "2026-09-22T18:00:00Z", ends_at: "2026-09-22T19:00:00Z" }, error: null }; } } as never;
-      await startMtuFocusHour(client, 45);
-      await endMtuFocusHour(client);
-      await listMtuFocusHours(client);
-      expect(calls).toEqual([
-        ["start_mtu_focus_hour", { p_minutes: 45 }],
-        ["end_mtu_focus_hour", undefined],
-        ["list_mtu_focus_hours", undefined],
-      ]);
-    });
   });
 });
 
@@ -42,6 +28,20 @@ describe("isMtuEmail", () => {
 });
 
 describe("avatar and profile helpers", () => {
+  it("defaults incognito off and uses exact student ID approval RPCs", async () => {
+    expect(normalizeProfileVisibility({ programme: false })).toEqual({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false });
+    const calls: unknown[] = [];
+    const client = { rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: [], error: null }; } } as never;
+    await listMtuApprovedPeople(client);
+    await setMtuApprovedPerson(client, "MTU-ABC123", true);
+    await setMtuApprovedPerson(client, "MTU-ABC123", false);
+    expect(calls).toEqual([
+      ["list_mtu_approved_people", undefined],
+      ["set_mtu_approved_person", { p_student_id: "MTU-ABC123", p_approved: true }],
+      ["set_mtu_approved_person", { p_student_id: "MTU-ABC123", p_approved: false }],
+    ]);
+  });
+
   it("rejects unsupported or oversized avatars", () => {
     expect(validateAvatarFile({ type: "image/gif", size: 10 }).valid).toBe(false);
     expect(validateAvatarFile({ type: "image/png", size: 6 * 1024 * 1024 }).valid).toBe(false);
@@ -105,9 +105,9 @@ describe("avatar and profile helpers", () => {
   });
 
   it("hydrates profile fields from Supabase user metadata", () => {
-    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: { display_name: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatar_url: "https://cdn/avatar.png", level: "300L", department: "CBAS", student_id: "MTU-26-7K4Q2", bio: "Study, build, connect.", profile_visibility: { programme: false, college: true, level: false, bio: true } } })).toEqual({ displayName: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatarUrl: "https://cdn/avatar.png", studentId: "MTU-26-7K4Q2", level: "300L", department: "CBAS", programme: "Computer Science", bio: "Study, build, connect.", visibility: { programme: false, college: true, level: false, bio: true, focus_hour: false } });
-    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: {} })).toMatchObject({ displayName: "", studentId: "", level: "", department: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, focus_hour: false } });
-    expect(getProfileMetadata(null)).toEqual({ displayName: "", nickname: "", college: "", major: "", avatarUrl: "", studentId: "", level: "", department: "", programme: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, focus_hour: false } });
+    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: { display_name: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatar_url: "https://cdn/avatar.png", level: "300L", department: "CBAS", student_id: "MTU-26-7K4Q2", bio: "Study, build, connect.", profile_visibility: { programme: false, college: true, level: false, bio: true } } })).toEqual({ displayName: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatarUrl: "https://cdn/avatar.png", studentId: "MTU-26-7K4Q2", level: "300L", department: "CBAS", programme: "Computer Science", bio: "Study, build, connect.", visibility: { programme: false, college: true, level: false, bio: true, incognito: false, allow_exact_id_lookup: false } });
+    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: {} })).toMatchObject({ displayName: "", studentId: "", level: "", department: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false } });
+    expect(getProfileMetadata(null)).toEqual({ displayName: "", nickname: "", college: "", major: "", avatarUrl: "", studentId: "", level: "", department: "", programme: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false } });
   });
 });
 

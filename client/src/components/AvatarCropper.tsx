@@ -21,7 +21,7 @@ export function AvatarCropper({ file, onComplete, onCancel }: Props) {
       canvas.height = output;
       const context = canvas.getContext("2d");
       if (!context) return;
-      context.fillStyle = "#f2dfc8";
+      context.fillStyle = "#EFE6D2";
       context.fillRect(0, 0, output, output);
       context.drawImage(image, (output - image.width * scale) / 2 + offsetX * 2, (output - image.height * scale) / 2 + offsetY * 2, image.width * scale, image.height * scale);
       canvas.toBlob((blob) => { if (blob) onComplete(new File([blob], "convo-avatar.jpg", { type: "image/jpeg" })); }, "image/jpeg", .9);

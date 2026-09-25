@@ -137,7 +137,7 @@ export function registerProviderRoutes(app: Express) {
       const call = Array.isArray(data) ? data[0] : data;
       if (error || !call?.id) {
         console.error("Call creation failed", { code: error?.code, message: error?.message });
-        return fail(res, error?.code === "42501" ? 403 : 400, error?.code === "42501" ? "This student cannot receive calls right now." : "The call request could not be created.");
+        return fail(res, error?.code === "42501" ? 403 : 400, error?.message || "The call request could not be created.");
       }
       const { data: participants, error: participantsError } = await auth.client.from("mtu_call_participants").select("user_id").eq("call_id", call.id);
       if (participantsError) {

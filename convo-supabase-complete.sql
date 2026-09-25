@@ -27,7 +27,7 @@ alter table public.profiles add column if not exists student_id text;
 alter table public.profiles add column if not exists bio text;
 alter table public.profiles add column if not exists status_text text;
 alter table public.profiles add column if not exists profile_visibility jsonb not null default
-  '{"programme": true, "college": true, "level": true, "bio": true, "focus_hour": false}'::jsonb;
+  '{"programme": true, "college": true, "level": true, "bio": true, "incognito": false, "allow_exact_id_lookup": false}'::jsonb;
 
 update public.profiles
 set student_id = 'MTU-' || upper(substr(replace(id::text, '-', ''), 1, 8))
@@ -47,6 +47,19 @@ as $$
     right(lower(coalesce(auth.jwt() ->> 'email', '')), 11) = '@mtu.edu.ng'
     or lower(coalesce(auth.jwt() ->> 'email', '')) = 'ajewoletimothymtu@gmail.com';
 $$;
+
+create table if not exists public.profile_approved_people (
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  approved_user_id uuid not null references auth.users(id) on delete cascade,
+  approved_at timestamptz not null default now(),
+  primary key (profile_id, approved_user_id),
+  check (profile_id <> approved_user_id)
+);
+alter table public.profile_approved_people enable row level security;
+drop policy if exists "Users manage approved people" on public.profile_approved_people;
+create policy "Users manage approved people" on public.profile_approved_people for all to authenticated
+using (auth.uid() = profile_id and public.is_mtu_account())
+with check (auth.uid() = profile_id and public.is_mtu_account());
 
 alter table public.profiles enable row level security;
 drop policy if exists "Students can read own profile" on public.profiles;
@@ -125,9 +138,19 @@ as $$
   from public.profiles p
   where public.is_mtu_account()
     and (
+      p.id = auth.uid()
+      or coalesce((p.profile_visibility ->> 'incognito')::boolean, false) = false
+      or exists (select 1 from public.connection_requests accepted where accepted.status = 'accepted' and ((accepted.requester_id = auth.uid() and accepted.recipient_id = p.id) or (accepted.requester_id = p.id and accepted.recipient_id = auth.uid())))
+      or exists (
+        select 1 from public.profile_approved_people approved
+        where approved.profile_id = p.id and approved.approved_user_id = auth.uid()
+      )
+      or (coalesce((p.profile_visibility ->> 'incognito')::boolean, false) and coalesce((p.profile_visibility ->> 'allow_exact_id_lookup')::boolean, false) and lower(coalesce(p.student_id, '')) = lower(trim(p_query)))
+    )
+    and (
       nullif(trim(p_query), '') is null
       or p.display_name ilike '%' || trim(p_query) || '%'
-      or p.student_id ilike '%' || trim(p_query) || '%'
+      or lower(p.student_id) = lower(trim(p_query))
       or coalesce(p.level, '') ilike '%' || trim(p_query) || '%'
       or coalesce(p.department, '') ilike '%' || trim(p_query) || '%'
       or coalesce(p.programme, '') ilike '%' || trim(p_query) || '%'
@@ -150,6 +173,21 @@ begin
      or auth.uid() = p_recipient_id then
     raise exception 'Only verified MTU users can send connection requests';
   end if;
+  if not exists (select 1 from public.profiles recipient where recipient.id = p_recipient_id) then
+    raise exception 'This student is not available for connection requests';
+  end if;
+  if exists (
+    select 1 from public.profiles recipient
+    where recipient.id = p_recipient_id
+      and coalesce((recipient.profile_visibility ->> 'incognito')::boolean, false)
+      and not exists (
+        select 1 from public.profile_approved_people approved
+        where approved.profile_id = recipient.id and approved.approved_user_id = auth.uid()
+      )
+      and not exists (select 1 from public.connection_requests accepted where accepted.status = 'accepted' and ((accepted.requester_id = auth.uid() and accepted.recipient_id = recipient.id) or (accepted.requester_id = recipient.id and accepted.recipient_id = auth.uid())))
+  ) then
+    raise exception 'This student only accepts connection requests from approved people';
+  end if;
 
   insert into public.connection_requests (requester_id, recipient_id)
   values (auth.uid(), p_recipient_id)
@@ -162,6 +200,39 @@ end;
 $$;
 
 grant execute on function public.send_connection_request(uuid) to authenticated;
+
+create or replace function public.list_mtu_approved_people()
+returns table(approved_id uuid, display_name text, student_id text, avatar_url text, approved_at timestamptz)
+language sql security definer stable set search_path = pg_catalog, public, auth
+as $$
+  select approved.approved_user_id, profile.display_name, profile.student_id, profile.avatar_url, approved.approved_at
+  from public.profile_approved_people approved
+  join public.profiles profile on profile.id = approved.approved_user_id
+  where approved.profile_id = auth.uid() and public.is_mtu_account()
+  order by approved.approved_at desc;
+$$;
+
+create or replace function public.set_mtu_approved_person(p_student_id text, p_approved boolean default true)
+returns boolean
+language plpgsql security definer set search_path = pg_catalog, public, auth
+as $$
+declare target_id uuid;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Only verified MTU users can manage approved people'; end if;
+  select profile.id into target_id from public.profiles profile
+  where lower(profile.student_id) = lower(trim(p_student_id)) and profile.id <> auth.uid();
+  if target_id is null then raise exception 'Enter an exact public student ID'; end if;
+  if p_approved then
+    insert into public.profile_approved_people(profile_id, approved_user_id)
+    values (auth.uid(), target_id) on conflict do nothing;
+  else
+    delete from public.profile_approved_people where profile_id = auth.uid() and approved_user_id = target_id;
+  end if;
+  return p_approved;
+end;
+$$;
+revoke execute on function public.list_mtu_approved_people(), public.set_mtu_approved_person(text, boolean) from public, anon;
+grant execute on function public.list_mtu_approved_people(), public.set_mtu_approved_person(text, boolean) to authenticated;
 
 create or replace function public.cancel_connection_request(p_recipient_id uuid)
 returns public.connection_requests
@@ -960,9 +1031,16 @@ as $$
   from public.profiles p
   where public.is_mtu_account()
     and (
+      p.id = auth.uid()
+      or coalesce((p.profile_visibility ->> 'incognito')::boolean, false) = false
+      or exists (select 1 from public.connection_requests accepted where accepted.status = 'accepted' and ((accepted.requester_id = auth.uid() and accepted.recipient_id = p.id) or (accepted.requester_id = p.id and accepted.recipient_id = auth.uid())))
+      or exists (select 1 from public.profile_approved_people approved where approved.profile_id = p.id and approved.approved_user_id = auth.uid())
+      or (coalesce((p.profile_visibility ->> 'incognito')::boolean, false) and coalesce((p.profile_visibility ->> 'allow_exact_id_lookup')::boolean, false) and lower(coalesce(p.student_id, '')) = lower(trim(p_query)))
+    )
+    and (
       nullif(trim(p_query), '') is null
       or p.display_name ilike '%' || trim(p_query) || '%'
-      or coalesce(p.student_id, '') ilike '%' || trim(p_query) || '%'
+      or lower(coalesce(p.student_id, '')) = lower(trim(p_query))
       or coalesce(p.level, '') ilike '%' || trim(p_query) || '%'
       or coalesce(p.department, '') ilike '%' || trim(p_query) || '%'
       or coalesce(p.programme, '') ilike '%' || trim(p_query) || '%'
@@ -997,7 +1075,8 @@ begin
     'college', coalesce((metadata -> 'profile_visibility' ->> 'college')::boolean, true),
     'level', coalesce((metadata -> 'profile_visibility' ->> 'level')::boolean, true),
     'bio', coalesce((metadata -> 'profile_visibility' ->> 'bio')::boolean, true),
-    'focus_hour', coalesce((metadata -> 'profile_visibility' ->> 'focus_hour')::boolean, false)
+    'incognito', coalesce((metadata -> 'profile_visibility' ->> 'incognito')::boolean, false),
+    'allow_exact_id_lookup', coalesce((metadata -> 'profile_visibility' ->> 'allow_exact_id_lookup')::boolean, false)
   );
   insert into public.profiles (id, display_name, student_id, level, department, programme, avatar_url, bio, profile_visibility)
   values (
@@ -1265,10 +1344,11 @@ with first_group_member as (
 )
 update public.conversation_members cm set group_role = 'owner' from first_group_member first_member where cm.conversation_id = first_member.conversation_id and cm.user_id = first_member.user_id and not exists (select 1 from public.conversation_members owner_member where owner_member.conversation_id = cm.conversation_id and owner_member.group_role = 'owner');
 drop function if exists public.create_mtu_group_conversation(text, uuid[]);
+drop function if exists public.list_mtu_group_members(uuid);
 create or replace function public.list_mtu_group_members(p_conversation_id uuid)
-returns table (user_id uuid, display_name text, student_id text, group_role text)
+returns table (user_id uuid, display_name text, student_id text, avatar_url text, group_role text)
 language sql security definer stable set search_path = pg_catalog, public, auth
-as $$ select cm.user_id,p.display_name,p.student_id,cm.group_role from public.conversation_members cm join public.conversations c on c.id = cm.conversation_id and c.kind = 'group' join public.profiles p on p.id = cm.user_id where cm.conversation_id = p_conversation_id and public.is_mtu_account() and exists (select 1 from public.conversation_members me where me.conversation_id = p_conversation_id and me.user_id = auth.uid()) order by case cm.group_role when 'owner' then 0 when 'admin' then 1 else 2 end,p.display_name $$;
+as $$ select cm.user_id,p.display_name,p.student_id,p.avatar_url,cm.group_role from public.conversation_members cm join public.conversations c on c.id = cm.conversation_id and c.kind = 'group' join public.profiles p on p.id = cm.user_id where cm.conversation_id = p_conversation_id and public.is_mtu_account() and exists (select 1 from public.conversation_members me where me.conversation_id = p_conversation_id and me.user_id = auth.uid()) order by case cm.group_role when 'owner' then 0 when 'admin' then 1 else 2 end,p.display_name $$;
 create or replace function public.add_mtu_group_members(p_conversation_id uuid, p_member_ids uuid[])
 returns integer language plpgsql security definer set search_path = pg_catalog, public, auth
 as $$ declare added integer; actor_role text; can_invite boolean; begin
@@ -2745,21 +2825,28 @@ as $$
   order by request.created_at desc;
 $$;
 
--- 5) Owner-only soft end. Existing messages remain auditable, but new message/group
--- writes should be rejected by the client and the send RPC after this migration.
+-- 5) Owner-only permanent group deletion. The conversation foreign-key cascades
+-- remove all group members, messages, metadata, and related collaboration data.
 create or replace function public.end_mtu_group(p_conversation_id uuid)
 returns boolean
 language plpgsql security definer set search_path = pg_catalog, public, auth
 as $$
+declare group_image_path_value text;
 begin
-  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to end this group'; end if;
+  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to delete this group'; end if;
   if not exists (
     select 1 from public.conversation_members member
     join public.conversations conversation on conversation.id = member.conversation_id and conversation.kind = 'group'
     where member.conversation_id = p_conversation_id and member.user_id = auth.uid() and member.group_role = 'owner'
-  ) then raise exception 'Only the group owner can end this group'; end if;
-  update public.conversations set ended_at = coalesce(ended_at, now()), updated_at = now()
-    where id = p_conversation_id and kind = 'group';
+  ) then raise exception 'Only the group owner can delete this group'; end if;
+  select conversation.group_image_path into group_image_path_value
+    from public.conversations conversation
+    where conversation.id = p_conversation_id and conversation.kind = 'group';
+  if not found then return false; end if;
+  if group_image_path_value is not null then
+    delete from storage.objects where bucket_id = 'group-images' and name = group_image_path_value;
+  end if;
+  delete from public.conversations where id = p_conversation_id and kind = 'group';
   return found;
 end;
 $$;
@@ -2850,7 +2937,7 @@ grant execute on function public.set_mtu_group_privacy(uuid, boolean) to authent
 -- RETURNS TABLE shape with CREATE OR REPLACE.
 create or replace function public.list_mtu_conversations_v3()
 returns table(
-  id uuid, kind text, title text, counterpart_id uuid, group_image_url text,
+  id uuid, kind text, title text, counterpart_id uuid, counterpart_avatar_url text, group_image_url text,
   group_category text, ended_at timestamptz, counterpart_last_seen_at timestamptz,
   updated_at timestamptz, last_message text, last_message_at timestamptz,
   unread_count bigint, is_pinned boolean, is_archived boolean, muted_until timestamptz,
@@ -2860,7 +2947,7 @@ language sql security definer stable set search_path = pg_catalog, public, auth
 as $$
   select conversation.id, conversation.kind,
     coalesce(preference.private_label, case when conversation.kind = 'direct' then coalesce(other_member.display_name, 'MTU connection') else conversation.title end),
-    other_member.user_id, conversation.group_image_url, conversation.group_category, conversation.ended_at,
+    other_member.user_id, other_member.avatar_url, conversation.group_image_url, conversation.group_category, conversation.ended_at,
     other_member.last_seen_at, conversation.updated_at, last_message.body, last_message.created_at,
     coalesce((select count(*) from public.messages unread where unread.conversation_id = conversation.id and unread.sender_id <> auth.uid() and unread.delivery_state <> 'blocked' and not exists (select 1 from public.message_reads receipt where receipt.message_id = unread.id and receipt.user_id = auth.uid())), 0),
     coalesce(preference.is_pinned, false), coalesce(preference.is_archived, false), preference.muted_until,
@@ -2869,7 +2956,7 @@ as $$
   join public.conversation_members me on me.conversation_id = conversation.id and me.user_id = auth.uid()
   left join public.conversation_member_preferences preference on preference.conversation_id = conversation.id and preference.user_id = auth.uid()
   left join lateral (
-    select member.user_id, profile.display_name, profile.last_seen_at
+    select member.user_id, profile.display_name, profile.avatar_url, profile.last_seen_at
     from public.conversation_members member
     left join public.profiles profile on profile.id = member.user_id
     where member.conversation_id = conversation.id and member.user_id <> auth.uid()
@@ -2994,6 +3081,8 @@ returns public.mtu_calls language plpgsql security definer set search_path = pub
 declare result public.mtu_calls; callee_policy text; conversation_kind text;
 begin
   if auth.uid() is null or not exists (select 1 from conversation_members where conversation_id = p_conversation_id and user_id = auth.uid()) then raise exception 'Invalid caller' using errcode = '42501'; end if;
+  update mtu_calls set status = 'failed', ended_at = coalesce(ended_at, now())
+    where status = 'ringing' and created_at < now() - interval '2 minutes';
   select kind into conversation_kind from conversations where id = p_conversation_id;
   if conversation_kind = 'group' then
     if (select count(*) from conversation_members where conversation_id = p_conversation_id) < 2 then raise exception 'A group call needs at least two members' using errcode = '42501'; end if;
@@ -3371,56 +3460,96 @@ begin
 end;
 $$;
 
--- ===== Focus Hour =====
-create table if not exists public.mtu_focus_hours (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  started_at timestamptz not null default now(),
-  ends_at timestamptz not null,
-  duration_minutes integer not null check (duration_minutes in (30, 45, 60)),
-  active boolean not null default true,
-  ended_at timestamptz,
-  check (ends_at > started_at)
+-- Persistent per-user notifications. The database is authoritative across devices.
+create table if not exists public.mtu_notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_id uuid not null references auth.users(id) on delete cascade,
+  actor_id uuid references auth.users(id) on delete set null,
+  notification_type text not null check (notification_type in ('message','connection','group','call','poll','task','event','announcement')),
+  title text not null,
+  body text not null default '',
+  conversation_id uuid references public.conversations(id) on delete cascade,
+  entity_id uuid,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  read_at timestamptz
 );
-create index if not exists mtu_focus_hours_active_idx on public.mtu_focus_hours (ends_at) where active and ended_at is null;
-alter table public.mtu_focus_hours enable row level security;
-create policy "focus hours own row" on public.mtu_focus_hours for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "focus hours eligible rows" on public.mtu_focus_hours for select using (
-  auth.uid() is not null and public.is_mtu_account() and active and ended_at is null and ends_at > now()
-  and exists (select 1 from public.profiles p where p.id = user_id and coalesce((p.profile_visibility ->> 'programme')::boolean, true) and coalesce((p.profile_visibility ->> 'focus_hour')::boolean, false))
-  and not exists (select 1 from public.student_blocks b where (b.blocker_id = auth.uid() and b.blocked_id = user_id) or (b.blocker_id = user_id and b.blocked_id = auth.uid()))
-);
-create or replace function public.start_mtu_focus_hour(p_minutes integer) returns public.mtu_focus_hours language plpgsql security definer set search_path = pg_catalog, public, auth as $$
-declare result public.mtu_focus_hours;
+create index if not exists mtu_notifications_recipient_created_idx on public.mtu_notifications (recipient_id, created_at desc);
+create index if not exists mtu_notifications_unread_idx on public.mtu_notifications (recipient_id, read_at) where read_at is null;
+alter table public.mtu_notifications enable row level security;
+drop policy if exists "Users can read their notifications" on public.mtu_notifications;
+create policy "Users can read their notifications" on public.mtu_notifications for select to authenticated using (recipient_id = auth.uid());
+drop policy if exists "Users can update their notifications" on public.mtu_notifications;
+create policy "Users can update their notifications" on public.mtu_notifications for update to authenticated using (recipient_id = auth.uid()) with check (recipient_id = auth.uid());
+drop policy if exists "Users can delete their notifications" on public.mtu_notifications;
+create policy "Users can delete their notifications" on public.mtu_notifications for delete to authenticated using (recipient_id = auth.uid());
+create or replace function public.notify_mtu_message()
+returns trigger language plpgsql security definer set search_path = pg_catalog, public
+as $$
 begin
-  if auth.uid() is null or not public.is_mtu_account() then raise exception 'Sign in to start a focus hour'; end if;
-  if p_minutes not in (30, 45, 60) then raise exception 'Choose 30, 45, or 60 minutes'; end if;
-  insert into public.mtu_focus_hours(user_id, started_at, ends_at, duration_minutes, active, ended_at)
-  values (auth.uid(), now(), now() + make_interval(mins => p_minutes), p_minutes, true, null)
-  on conflict (user_id) do update set started_at = excluded.started_at, ends_at = excluded.ends_at, duration_minutes = excluded.duration_minutes, active = true, ended_at = null
-  returning * into result;
-  return result;
+  insert into public.mtu_notifications (recipient_id, actor_id, notification_type, title, body, conversation_id, entity_id, payload)
+  select cm.user_id, new.sender_id, 'message', coalesce(p.display_name, 'New message'),
+    case when nullif(trim(new.body), '') is null then 'Sent an attachment' else left(new.body, 280) end,
+    new.conversation_id, new.id, jsonb_build_object('message_id', new.id, 'sender_id', new.sender_id)
+  from public.conversation_members cm
+  left join public.profiles p on p.id = new.sender_id
+  where cm.conversation_id = new.conversation_id and cm.user_id <> new.sender_id;
+  return new;
 end;
 $$;
-create or replace function public.end_mtu_focus_hour() returns public.mtu_focus_hours language plpgsql security definer set search_path = pg_catalog, public, auth as $$
-declare result public.mtu_focus_hours;
+drop trigger if exists messages_create_mtu_notification on public.messages;
+create trigger messages_create_mtu_notification after insert on public.messages for each row execute function public.notify_mtu_message();
+create or replace function public.notify_mtu_connection_request()
+returns trigger language plpgsql security definer set search_path = pg_catalog, public
+as $$
 begin
-  update public.mtu_focus_hours set ended_at = now(), active = false where user_id = auth.uid() and active and ended_at is null and ends_at > now() returning * into result;
-  return result;
+  if new.status = 'pending' then
+    insert into public.mtu_notifications (recipient_id, actor_id, notification_type, title, body, entity_id, payload)
+    select new.recipient_id, new.requester_id, 'connection', coalesce(p.display_name, 'An MTU student') || ' wants to connect', 'Connection request', new.id, jsonb_build_object('request_id', new.id)
+    from public.profiles p where p.id = new.requester_id;
+  end if;
+  return new;
 end;
 $$;
-create or replace function public.get_my_mtu_focus_hour() returns public.mtu_focus_hours language sql security definer set search_path = pg_catalog, public, auth as $$
-  select * from public.mtu_focus_hours where user_id = auth.uid() and active and ended_at is null and ends_at > now();
+drop trigger if exists connection_requests_create_mtu_notification on public.connection_requests;
+create trigger connection_requests_create_mtu_notification after insert on public.connection_requests for each row execute function public.notify_mtu_connection_request();
+create or replace function public.notify_mtu_group_activity()
+returns trigger language plpgsql security definer set search_path = pg_catalog, public
+as $$
+declare row_data jsonb := to_jsonb(new); target_conversation_id uuid := nullif(row_data->>'conversation_id', '')::uuid; actor_user_id uuid := nullif(coalesce(row_data->>'created_by', row_data->>'created_by_id'), '')::uuid; target_entity_id uuid := nullif(row_data->>'id', '')::uuid; activity_type text := case tg_table_name when 'group_polls' then 'poll' when 'group_tasks' then 'task' when 'group_events' then 'event' else 'announcement' end; activity_title text := case tg_table_name when 'group_polls' then 'New group poll' when 'group_tasks' then 'New group task' when 'group_events' then 'New group event' else 'New group announcement' end; activity_body text := coalesce(row_data->>'question', row_data->>'title', 'New group activity');
+begin
+  insert into public.mtu_notifications (recipient_id, actor_id, notification_type, title, body, conversation_id, entity_id, payload)
+  select cm.user_id, actor_user_id, activity_type, activity_title, left(activity_body, 280), target_conversation_id, target_entity_id, row_data from public.conversation_members cm where cm.conversation_id = target_conversation_id and cm.user_id <> actor_user_id;
+  return new;
+end;
 $$;
-create or replace function public.list_mtu_focus_hours() returns table (user_id uuid, display_name text, avatar_url text, programme text, level text, started_at timestamptz, ends_at timestamptz) language sql security definer set search_path = pg_catalog, public, auth as $$
-  select f.user_id, p.display_name, p.avatar_url, p.programme, p.level, f.started_at, f.ends_at
-  from public.mtu_focus_hours f join public.profiles p on p.id = f.user_id
-  where auth.uid() is not null and public.is_mtu_account() and f.active and f.ended_at is null and f.ends_at > now() and f.user_id <> auth.uid()
-    and coalesce((p.profile_visibility ->> 'programme')::boolean, true) and coalesce((p.profile_visibility ->> 'focus_hour')::boolean, false)
-    and not exists (select 1 from public.student_blocks b where (b.blocker_id = auth.uid() and b.blocked_id = f.user_id) or (b.blocker_id = f.user_id and b.blocked_id = auth.uid()))
-  order by f.started_at desc;
+drop trigger if exists group_polls_create_mtu_notification on public.group_polls;
+create trigger group_polls_create_mtu_notification after insert on public.group_polls for each row execute function public.notify_mtu_group_activity();
+drop trigger if exists group_tasks_create_mtu_notification on public.group_tasks;
+create trigger group_tasks_create_mtu_notification after insert on public.group_tasks for each row execute function public.notify_mtu_group_activity();
+drop trigger if exists group_events_create_mtu_notification on public.group_events;
+create trigger group_events_create_mtu_notification after insert on public.group_events for each row execute function public.notify_mtu_group_activity();
+drop trigger if exists group_announcements_create_mtu_notification on public.group_announcements;
+create trigger group_announcements_create_mtu_notification after insert on public.group_announcements for each row execute function public.notify_mtu_group_activity();
+create or replace function public.notify_mtu_call()
+returns trigger language plpgsql security definer set search_path = pg_catalog, public
+as $$
+begin
+  insert into public.mtu_notifications (recipient_id, actor_id, notification_type, title, body, conversation_id, entity_id, payload)
+  select cm.user_id, new.caller_id, 'call', 'Incoming Convo call', initcap(new.call_type) || ' call', new.conversation_id, new.id, jsonb_build_object('call_id', new.id, 'call_type', new.call_type)
+  from public.conversation_members cm
+  where cm.conversation_id = new.conversation_id and cm.user_id <> new.caller_id and (new.callee_id is null or cm.user_id = new.callee_id);
+  return new;
+end;
 $$;
-revoke all on public.mtu_focus_hours from anon, authenticated;
-grant select on public.mtu_focus_hours to authenticated;
-revoke all on function public.start_mtu_focus_hour(integer), public.end_mtu_focus_hour(), public.get_my_mtu_focus_hour(), public.list_mtu_focus_hours() from public, anon;
-grant execute on function public.start_mtu_focus_hour(integer), public.end_mtu_focus_hour(), public.get_my_mtu_focus_hour(), public.list_mtu_focus_hours() to authenticated;
-do $$ begin alter publication supabase_realtime add table public.mtu_focus_hours; exception when duplicate_object then null; end $$;
+drop trigger if exists mtu_calls_create_mtu_notification on public.mtu_calls;
+create trigger mtu_calls_create_mtu_notification after insert on public.mtu_calls for each row execute function public.notify_mtu_call();
+grant select, update, delete on public.mtu_notifications to authenticated;
+revoke all on public.mtu_notifications from anon;
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'mtu_notifications') then
+    alter publication supabase_realtime add table public.mtu_notifications;
+  end if;
+end $$;

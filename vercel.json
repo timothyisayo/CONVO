@@ -4,7 +4,7 @@
   "outputDirectory": "dist/public",
   "functions": {
     "api/**/*.ts": {
-      "includeFiles": ["server/**"]
+      "includeFiles": "server/**"
     }
   },
   "rewrites": [

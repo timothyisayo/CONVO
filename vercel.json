@@ -2,6 +2,11 @@
   "version": 2,
   "buildCommand": "pnpm build",
   "outputDirectory": "dist/public",
+  "functions": {
+    "api/**/*.ts": {
+      "includeFiles": ["server/**"]
+    }
+  },
   "rewrites": [
     {
       "source": "/((?!api(?:/|$)|assets/|robots\\.txt$|sitemap\\.xml$|manifest\\.webmanifest$|sw\\.js$).*)",
@@ -11,11 +16,21 @@
   "headers": [
     {
       "source": "/manifest.webmanifest",
-      "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/manifest+json"
+        }
+      ]
     },
     {
       "source": "/sw.js",
-      "headers": [{ "key": "Content-Type", "value": "application/javascript" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/javascript"
+        }
+      ]
     }
   ]
 }

@@ -32,8 +32,8 @@ export const MESSAGE_AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 export const MESSAGE_AUDIO_TYPES = ["audio/webm", "audio/mp4", "audio/m4a", "audio/ogg", "audio/mpeg"] as const;
 export const MESSAGE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 export const MESSAGE_FILE_TYPES = ["application/pdf", "text/plain", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/zip"] as const;
-export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean; incognito: boolean; allow_exact_id_lookup: boolean };
-export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false };
+export type ProfileVisibility = { programme: boolean; college: boolean; level: boolean; bio: boolean; incognito: boolean; allow_exact_id_lookup: boolean; allow_public_id_copy: boolean };
+export const DEFAULT_PROFILE_VISIBILITY: ProfileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true };
 
 export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
   if (!value || typeof value !== "object") return { ...DEFAULT_PROFILE_VISIBILITY };
@@ -45,6 +45,7 @@ export function normalizeProfileVisibility(value: unknown): ProfileVisibility {
     bio: typeof candidate.bio === "boolean" ? candidate.bio : true,
     incognito: typeof candidate.incognito === "boolean" ? candidate.incognito : false,
     allow_exact_id_lookup: typeof candidate.allow_exact_id_lookup === "boolean" ? candidate.allow_exact_id_lookup : false,
+    allow_public_id_copy: typeof candidate.allow_public_id_copy === "boolean" ? candidate.allow_public_id_copy : true,
   };
 }
 
@@ -102,7 +103,7 @@ export async function uploadAvatar(client: Pick<SupabaseClient, "storage">, file
 export type MtuStudent = {
   id: string;
   display_name: string;
-  student_id: string;
+  student_id: string | null;
   is_self?: boolean;
   level: string | null;
   department: string | null;
@@ -199,6 +200,13 @@ export function validateGroupImageFile(file: Pick<File, "type" | "size"> | null)
   return { valid: true as const, error: "" };
 }
 
+export function validateConversationAppearanceImage(file: Pick<File, "type" | "size"> | null) {
+  if (!file) return { valid: false as const, error: "Choose a PNG, JPG, or WebP background image." };
+  if (!AVATAR_TYPES.includes(file.type as (typeof AVATAR_TYPES)[number])) return { valid: false as const, error: "Use a PNG, JPG, or WebP background image." };
+  if (file.size > AVATAR_MAX_BYTES) return { valid: false as const, error: "Background images must be 5 MB or smaller." };
+  return { valid: true as const, error: "" };
+}
+
 export async function uploadMtuGroupImage(client: Pick<SupabaseClient, "storage">, file: File, userId: string, conversationId: string) {
   const validation = validateGroupImageFile(file);
   if (!validation.valid) return { url: "", path: "", error: validation.error };
@@ -207,6 +215,23 @@ export async function uploadMtuGroupImage(client: Pick<SupabaseClient, "storage"
   const upload = await client.storage.from("group-images").upload(path, file, { upsert: false, contentType: file.type });
   if (upload.error) return { url: "", path: "", error: upload.error.message };
   return { url: client.storage.from("group-images").getPublicUrl(path).data.publicUrl, path, error: "" };
+}
+
+export async function uploadConversationAppearanceImage(client: Pick<SupabaseClient, "storage">, file: File, userId: string, conversationId: string) {
+  const validation = validateConversationAppearanceImage(file);
+  if (!validation.valid) return { url: "", path: "", error: validation.error };
+  const safeName = file.name.replace(/[^a-z0-9.-]/gi, "-").toLowerCase();
+  const path = `${conversationId}/${userId}/${crypto.randomUUID()}-${safeName}`;
+  const upload = await client.storage.from("conversation-backgrounds").upload(path, file, { upsert: false, contentType: file.type });
+  if (upload.error) return { url: "", path: "", error: upload.error.message };
+  return { url: client.storage.from("conversation-backgrounds").getPublicUrl(path).data.publicUrl, path, error: "" };
+}
+
+export async function removeConversationAppearanceImage(client: Pick<SupabaseClient, "storage">, path: string, userId: string) {
+  const pathParts = path.split("/");
+  if (pathParts.length < 3 || pathParts[1] !== userId) return { error: "You can only remove your own conversation background." };
+  const { error } = await client.storage.from("conversation-backgrounds").remove([path]);
+  return { error: error?.message || null };
 }
 
 export async function setMtuGroupImage(client: Pick<SupabaseClient, "rpc">, conversationId: string, imageUrl: string, imagePath: string) {
@@ -345,16 +370,46 @@ export async function setMtuConversationNotificationPreference(client: Pick<Supa
   return { data: (data || null) as MtuConversationNotificationPreference | null, error };
 }
 
-export type MtuConversationAppearance = { chat_theme: "convo" | "cream" | "peach" | "sage" | "lavender" | "midnight"; wallpaper_variant: "plain" | "organic" | "campus" | "gradient" };
+export type MtuConversationAppearance = { background_image_url: string | null; background_image_path: string | null };
 
-export async function getMtuConversationAppearance(client: Pick<SupabaseClient, "rpc">, conversationId: string) {
-  const { data, error } = await client.rpc("get_mtu_conversation_appearance", { p_conversation_id: conversationId });
-  return { data: (data || null) as MtuConversationAppearance | null, error };
+export function normalizeConversationAppearance(value: unknown, client: Pick<SupabaseClient, "storage">): MtuConversationAppearance | null {
+  const row = Array.isArray(value) ? value[0] : value;
+  if (!row || typeof row !== "object") return null;
+  const candidate = row as Record<string, unknown>;
+  const backgroundImagePath = typeof candidate.background_image_path === "string" && candidate.background_image_path.trim() ? candidate.background_image_path : null;
+  return {
+    background_image_path: backgroundImagePath,
+    background_image_url: backgroundImagePath ? client.storage.from("conversation-backgrounds").getPublicUrl(backgroundImagePath).data.publicUrl : null,
+  };
 }
 
-export async function setMtuConversationAppearance(client: Pick<SupabaseClient, "rpc">, conversationId: string, appearance: MtuConversationAppearance) {
-  const { data, error } = await client.rpc("set_mtu_conversation_appearance", { p_conversation_id: conversationId, p_chat_theme: appearance.chat_theme, p_wallpaper_variant: appearance.wallpaper_variant });
-  return { data: (data || null) as MtuConversationAppearance | null, error };
+export async function getMtuConversationAppearance(client: Pick<SupabaseClient, "rpc" | "storage">, conversationId: string) {
+  const { data, error } = await client.rpc("get_mtu_conversation_appearance", { p_conversation_id: conversationId });
+  const normalized = normalizeConversationAppearance(data, client);
+  return { data: normalized, error };
+}
+
+export async function setMtuConversationAppearance(client: Pick<SupabaseClient, "rpc" | "storage">, conversationId: string, appearance: MtuConversationAppearance) {
+  const { data, error } = await client.rpc("set_mtu_conversation_appearance", {
+    p_conversation_id: conversationId,
+    p_background_image_path: appearance.background_image_path,
+  });
+  if (error) return { data: null, error: error.message };
+  const normalized = normalizeConversationAppearance(data, client);
+  return normalized
+    ? { data: normalized, error: null }
+    : { data: null, error: "The chat background could not be saved." };
+}
+
+export function subscribeToMtuConversationAppearance(
+  client: Pick<SupabaseClient, "channel" | "removeChannel">,
+  conversationId: string,
+  onChange: () => void,
+) {
+  const channel = client.channel(`convo-appearance-${conversationId}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "conversation_appearance_settings", filter: `conversation_id=eq.${conversationId}` }, onChange)
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
 }
 
 export type MtuSavedMessage = { message_id: string; conversation_id: string; conversation_title: string; sender_id: string; sender_display_name: string; body: string; created_at: string; attachment_url?: string | null; attachment_mime?: string | null };
@@ -369,6 +424,122 @@ export type MtuConversationSearchResult = { id: string; sender_id: string; sende
 export async function searchMtuConversationMessages(client: Pick<SupabaseClient, "rpc">, conversationId: string, query: string) {
   const { data, error } = await client.rpc("search_mtu_conversation_messages", { p_conversation_id: conversationId, p_query: query });
   return { data: (data || []) as MtuConversationSearchResult[], error };
+}
+
+export type MtuStatusViewer = { user_id: string; display_name: string; avatar_url: string | null; viewed_at: string };
+export type MtuStatus = {
+  status_id: string;
+  user_id: string;
+  status_type: "text" | "image" | "video";
+  text_content: string;
+  media_path: string | null;
+  media_url: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  expires_at: string;
+  display_name: string;
+  avatar_url: string | null;
+  view_count: number;
+  viewed_by_me: boolean;
+  viewers: MtuStatusViewer[];
+};
+export type MtuStatusDraft = {
+  status_type: MtuStatus["status_type"];
+  text_content: string;
+  media?: File | null;
+  metadata?: Record<string, unknown>;
+};
+
+export const STATUS_MEDIA_MAX_BYTES = 25 * 1024 * 1024;
+export const STATUS_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export const STATUS_VIDEO_TYPES = ["video/mp4", "video/webm", "video/quicktime"] as const;
+
+export function validateMtuStatusMedia(file: Pick<File, "type" | "size"> | null, kind: "image" | "video") {
+  if (!file) return { valid: false as const, error: "Choose media before posting." };
+  const accepted: readonly string[] = kind === "image" ? STATUS_IMAGE_TYPES : STATUS_VIDEO_TYPES;
+  if (!accepted.includes(file.type)) return { valid: false as const, error: kind === "image" ? "Use a JPG, PNG, or WebP image." : "Use an MP4, WebM, or QuickTime video." };
+  if (file.size > STATUS_MEDIA_MAX_BYTES) return { valid: false as const, error: "Edited status media must be 25 MB or smaller." };
+  return { valid: true as const, error: "" };
+}
+
+export async function listMtuStatuses(client: Pick<SupabaseClient, "rpc" | "storage">) {
+  const { data, error } = await client.rpc("list_mtu_statuses");
+  if (error) return { data: [] as MtuStatus[], error };
+  const statuses = (data || []) as Array<Omit<MtuStatus, "media_url"> & { viewers: MtuStatusViewer[] | null }>;
+  const signed = await Promise.all(statuses.map(async (status) => {
+    if (!status.media_path) return { ...status, media_url: null, viewers: status.viewers || [] } as MtuStatus;
+    const lifetime = Math.max(60, Math.min(24 * 60 * 60, Math.floor((Date.parse(status.expires_at) - Date.now()) / 1000)));
+    const { data: urlData, error: urlError } = await client.storage.from("status-media").createSignedUrl(status.media_path, lifetime);
+    if (urlError) throw new Error(`Couldn’t open an active Status: ${urlError.message}`);
+    return { ...status, media_url: urlData.signedUrl, viewers: status.viewers || [] } as MtuStatus;
+  }));
+  return { data: signed, error: null };
+}
+
+export async function publishMtuStatus(client: Pick<SupabaseClient, "from" | "storage" | "rpc">, userId: string, draft: MtuStatusDraft) {
+  const text = draft.text_content.trim();
+  if (draft.status_type === "text" && (!text || text.length > 700)) return { data: null as MtuStatus | null, error: new Error("Text Statuses must contain 1 to 700 characters.") };
+  if (draft.status_type !== "text" && !draft.media) return { data: null as MtuStatus | null, error: new Error("Choose edited media before posting.") };
+
+  let mediaPath: string | null = null;
+  if (draft.media) {
+    const mediaKind = draft.status_type === "video" ? "video" : "image";
+    const validation = validateMtuStatusMedia(draft.media, mediaKind);
+    if (!validation.valid) return { data: null as MtuStatus | null, error: new Error(validation.error) };
+    const extension = draft.media.type === "image/jpeg" ? "jpg" : draft.media.type.split("/")[1]?.replace("quicktime", "mov") || "bin";
+    mediaPath = `${userId}/${crypto.randomUUID()}.${extension}`;
+    const uploaded = await client.storage.from("status-media").upload(mediaPath, draft.media, { upsert: false, contentType: draft.media.type, cacheControl: "3600" });
+    if (uploaded.error) return { data: null as MtuStatus | null, error: uploaded.error };
+  }
+
+  const inserted = await client.from("status_posts").insert({
+    user_id: userId,
+    status_type: draft.status_type,
+    text_content: text,
+    media_path: mediaPath,
+    metadata: draft.metadata || {},
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  }).select("id").single();
+  if (inserted.error || !inserted.data) {
+    if (mediaPath) {
+      const cleanup = await client.storage.from("status-media").remove([mediaPath]);
+      if (cleanup.error) return { data: null as MtuStatus | null, error: new Error(`${inserted.error?.message || "Couldn’t save Status."} Media cleanup also failed: ${cleanup.error.message}`) };
+    }
+    return { data: null as MtuStatus | null, error: inserted.error || new Error("Couldn’t save Status.") };
+  }
+
+  const refreshed = await listMtuStatuses(client);
+  if (refreshed.error) return { data: null as MtuStatus | null, error: refreshed.error };
+  return { data: refreshed.data.find((status) => status.status_id === inserted.data.id) || null, error: null };
+}
+
+export async function deleteMtuStatus(client: Pick<SupabaseClient, "from" | "storage">, statusId: string) {
+  const found = await client.from("status_posts").select("media_path").eq("id", statusId).maybeSingle();
+  if (found.error) return { data: false, error: found.error };
+  if (!found.data) return { data: false, error: new Error("This Status is no longer available.") };
+  const removed = await client.from("status_posts").delete().eq("id", statusId);
+  if (removed.error) return { data: false, error: removed.error };
+  if (found.data.media_path) {
+    const cleanup = await client.storage.from("status-media").remove([found.data.media_path]);
+    if (cleanup.error) return { data: true, error: cleanup.error };
+  }
+  return { data: true, error: null };
+}
+
+export async function recordMtuStatusView(client: Pick<SupabaseClient, "from">, statusId: string, viewerId: string) {
+  const { error } = await client.from("status_views").upsert(
+    { status_id: statusId, viewer_id: viewerId },
+    { onConflict: "status_id,viewer_id", ignoreDuplicates: true },
+  );
+  return { error };
+}
+
+export function subscribeToMtuStatuses(client: Pick<SupabaseClient, "channel" | "removeChannel">, onChange: () => void) {
+  const channel = client.channel("convo-status-updates")
+    .on("postgres_changes", { event: "*", schema: "public", table: "status_posts" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "status_views" }, onChange)
+    .subscribe();
+  return () => { void client.removeChannel(channel); };
 }
 
 
@@ -659,7 +830,7 @@ export type MtuNotification = {
 };
 
 export async function listMtuNotifications(client: Pick<SupabaseClient, "from">, limit = 100) {
-  const result = await client.from("mtu_notifications").select("*").order("created_at", { ascending: false }).limit(limit);
+  const result = await client.from("mtu_notifications").select("*").is("read_at", null).order("created_at", { ascending: false }).limit(limit);
   return { data: (result.data || []) as MtuNotification[], error: result.error };
 }
 
@@ -669,13 +840,17 @@ export async function markMtuNotificationRead(client: Pick<SupabaseClient, "from
 }
 
 export async function clearMtuNotifications(client: Pick<SupabaseClient, "from">) {
-  const result = await client.from("mtu_notifications").delete().not("read_at", "is", null);
+  const result = await client.from("mtu_notifications").delete().not("id", "is", null);
   return { data: result.data, error: result.error };
 }
 
 export function subscribeToMtuNotifications(client: Pick<SupabaseClient, "channel" | "removeChannel">, recipientId: string, onNotification: (notification: Record<string, unknown>) => void) {
   const channel = client.channel(`convo-notifications-${recipientId}`)
-    .on("postgres_changes", { event: "*", schema: "public", table: "mtu_notifications", filter: `recipient_id=eq.${recipientId}` }, (payload) => onNotification(((payload as { new?: Record<string, unknown> }).new || {}) as Record<string, unknown>))
+    .on("postgres_changes", { event: "*", schema: "public", table: "mtu_notifications", filter: `recipient_id=eq.${recipientId}` }, (payload) => {
+      const change = payload as { eventType?: string; new?: Record<string, unknown>; old?: Record<string, unknown> };
+      const row = change.eventType === "DELETE" ? change.old : change.new;
+      if (row) onNotification({ ...row, __deleted: change.eventType === "DELETE" });
+    })
     .subscribe();
   return () => { void client.removeChannel(channel); };
 }

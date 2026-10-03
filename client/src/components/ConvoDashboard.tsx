@@ -10,10 +10,11 @@ import QRCode from "qrcode";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CampusGroup, CampusPost } from "@/lib/campus-data";
 import { ConvoOrbit } from "@/components/ConvoOrbit";
+import { StatusStories } from "@/components/StatusStories";
 import { StudentIdCard, StudentIdCardVisibilityContext } from "@/components/StudentIdCard";
 import { VaultPanel } from "@/components/VaultPanel";
 import { MTU_COLLEGE_OPTIONS, MTU_LEVEL_OPTIONS, MTU_PROGRAMME_OPTIONS, programmesForCollege } from "@shared/academic";
-import type { MtuConversationAppearance, MtuNotification, MtuPrivacySettings, ProfileVisibility } from "@/lib/supabase";
+import { supabase, type MtuConversationAppearance, type MtuNotification, type MtuPrivacySettings, type ProfileVisibility, removeConversationAppearanceImage, uploadConversationAppearanceImage, validateConversationAppearanceImage } from "@/lib/supabase";
 
 type DashboardView = "home" | "discover" | "messages" | "notifications" | "profile" | "groups" | "campus" | "events" | "files" | "assistant" | "vault" | "settings" | "id";
 type AssistantMessage = { role: "user" | "assistant"; content: string; attachmentNames?: string[] };
@@ -55,6 +56,7 @@ type ActivityNotification = {
   body: string;
   createdAt: string;
   conversationId?: string;
+  connectionRequestId?: string;
   unread: boolean;
 };
 
@@ -74,7 +76,7 @@ type Props = {
   posts: CampusPost[];
   joinedGroupIds?: string[];
   onJoinGroup?: (groupId: string) => Promise<{ ok: boolean; error?: string; alreadyJoined?: boolean }>;
-  onSearchStudents?: (query: string) => Promise<{ data: Array<{ id: string; display_name: string; student_id: string; is_self?: boolean; programme: string | null; department: string | null; level: string | null; avatar_url: string | null; bio: string | null; status_text: string | null }>; error: { message: string } | null }>;
+  onSearchStudents?: (query: string) => Promise<{ data: Array<{ id: string; display_name: string; student_id: string | null; is_self?: boolean; programme: string | null; department: string | null; level: string | null; avatar_url: string | null; bio: string | null; status_text: string | null }>; error: { message: string } | null }>;
   onSendConnectionRequest?: (recipientId: string) => Promise<{ ok: boolean; error?: string }>;
   onCancelConnectionRequest?: (recipientId: string) => Promise<{ ok: boolean; error?: string }>;
   onStartDirectConversation?: (studentId: string) => Promise<{ data: string | null; error: { message: string } | null }>;
@@ -112,6 +114,7 @@ type Props = {
   onSubscribeToNotifications?: (onNotification: (notification: Record<string, unknown>) => void) => () => void;
   onLoadConversationAppearance?: (conversationId: string) => Promise<{ data: MtuConversationAppearance | null; error: string | null }>;
   onSetConversationAppearance?: (conversationId: string, appearance: MtuConversationAppearance) => Promise<{ data: MtuConversationAppearance | null; error: string | null }>;
+  onSubscribeToConversationAppearance?: (conversationId: string, onChange: () => void) => () => void;
   onLoadSavedMessages?: () => Promise<{ data: Array<{ message_id: string; conversation_id: string; conversation_title: string; sender_id: string; sender_display_name: string; body: string; created_at: string; attachment_url?: string | null; attachment_mime?: string | null }>; error: string | null }>;
   onSearchConversationMessages?: (conversationId: string, query: string) => Promise<{ data: Array<{ id: string; sender_id: string; sender_display_name: string; body: string; created_at: string; attachment_url?: string | null; attachment_mime?: string | null; reply_to_id?: string | null }>; error: string | null }>;
   onCreateGroupPoll?: (conversationId: string, question: string, options: string[], closesAt: string | null, anonymousVoters: boolean) => Promise<{ data: { poll_id: string; message_id: string } | null; error: string | null }>;
@@ -191,7 +194,7 @@ function messageDateLabel(value: string) {
 function messageDateKey(value: string) { return new Date(value).toLocaleDateString(); }
 function messageTime(value: string) { return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 
-export function ConvoDashboard({ currentUserId = "", displayName, legalName = "", major, avatarUrl, studentId = "", level = "", department = "", programme, bio = "", profileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false }, groups, posts, joinedGroupIds,   onJoinGroup, onSearchStudents, onSendConnectionRequest, onCancelConnectionRequest, onStartDirectConversation, onCreateGroupConversation, onUpdateGroupImage, onLoadGroupMembers, onAddGroupMembers, onSetGroupMemberRole, onRemoveGroupMember, onCreateGroupInvite, onRotateGroupInvite, onLoadGroupPermissions, onSetGroupPermissions, onJoinGroupInvite, onLoadGroupJoinRequests, onReviewGroupJoinRequest, onSendMessage, onEditMessage, onDeleteMessage, onLoadMessageInteractions, onToggleMessageReaction, onToggleSavedMessage, onTogglePinnedMessage, onSetConversationPreference, onSetConversationRailState, onLoadPrivacySettings, onSetPrivacySettings, onLoadConversationNotificationPreference, onSetConversationNotificationPreference, notificationsEnabled = false, onSetNotificationsEnabled, onLoadNotifications, onMarkNotificationRead, onClearNotifications, onSubscribeToNotifications, onLoadConversationAppearance, onSetConversationAppearance, onLoadSavedMessages, onSearchConversationMessages, onCreateGroupPoll, onUpdateGroupPoll, onCloseGroupPoll, onDeleteGroupPoll, onLoadGroupEvents, onSetGroupEventResponse, onCreateGroupEvent, onCancelGroupEvent, onUpdateGroupEvent, onDeleteGroupEvent, onLoadGroupNotes, onUpdateGroupNote, onCreateGroupNote, onLoadGroupAnnouncements, onCreateGroupAnnouncement, onUpdateGroupAnnouncement, onDeleteGroupAnnouncement, onLoadGroupPolls, onVoteOnGroupPoll, onCreateGroupTask, onUpdateGroupTask, onDeleteGroupTask, onLoadGroupTasks, onSetGroupTaskCompleted, onSubscribeToGroupActivity, onLoadConnectionRequests, onSubscribeToConnectionRequests, onAcceptConnectionRequest, onBlockStudent, onLoadBlockedStudents, onUnblockStudent, onReportStudent, onTouchLastSeen, onSearchGroups, onRequestGroupJoin, onEndGroup, onSetGroupPrivate, onDeleteGroupMessage, onLoadSharedFiles, onLoadConversations,   onLoadMessages, onMarkConversationRead, onSubscribeToPublicProfiles, onSubscribeToMessages, onSubscribeToAllMessages, onSubscribeToConversation, onExit, onLogout, onUpdateProfile, onUpdateAvatar, onUpdatePrivacy, onLoadApprovedPeople, onSetApprovedPerson, onAskAssistant, vaultClient, isExiting = false, isEntering = false }: Props) {
+export function ConvoDashboard({ currentUserId = "", displayName, legalName = "", major, avatarUrl, studentId = "", level = "", department = "", programme, bio = "", profileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true }, groups, posts, joinedGroupIds,   onJoinGroup, onSearchStudents, onSendConnectionRequest, onCancelConnectionRequest, onStartDirectConversation, onCreateGroupConversation, onUpdateGroupImage, onLoadGroupMembers, onAddGroupMembers, onSetGroupMemberRole, onRemoveGroupMember, onCreateGroupInvite, onRotateGroupInvite, onLoadGroupPermissions, onSetGroupPermissions, onJoinGroupInvite, onLoadGroupJoinRequests, onReviewGroupJoinRequest, onSendMessage, onEditMessage, onDeleteMessage, onLoadMessageInteractions, onToggleMessageReaction, onToggleSavedMessage, onTogglePinnedMessage, onSetConversationPreference, onSetConversationRailState, onLoadPrivacySettings, onSetPrivacySettings, onLoadConversationNotificationPreference, onSetConversationNotificationPreference, notificationsEnabled = false, onSetNotificationsEnabled, onLoadNotifications, onMarkNotificationRead, onClearNotifications, onSubscribeToNotifications, onLoadConversationAppearance, onSetConversationAppearance, onSubscribeToConversationAppearance, onLoadSavedMessages, onSearchConversationMessages, onCreateGroupPoll, onUpdateGroupPoll, onCloseGroupPoll, onDeleteGroupPoll, onLoadGroupEvents, onSetGroupEventResponse, onCreateGroupEvent, onCancelGroupEvent, onUpdateGroupEvent, onDeleteGroupEvent, onLoadGroupNotes, onUpdateGroupNote, onCreateGroupNote, onLoadGroupAnnouncements, onCreateGroupAnnouncement, onUpdateGroupAnnouncement, onDeleteGroupAnnouncement, onLoadGroupPolls, onVoteOnGroupPoll, onCreateGroupTask, onUpdateGroupTask, onDeleteGroupTask, onLoadGroupTasks, onSetGroupTaskCompleted, onSubscribeToGroupActivity, onLoadConnectionRequests, onSubscribeToConnectionRequests, onAcceptConnectionRequest, onBlockStudent, onLoadBlockedStudents, onUnblockStudent, onReportStudent, onTouchLastSeen, onSearchGroups, onRequestGroupJoin, onEndGroup, onSetGroupPrivate, onDeleteGroupMessage, onLoadSharedFiles, onLoadConversations,   onLoadMessages, onMarkConversationRead, onSubscribeToPublicProfiles, onSubscribeToMessages, onSubscribeToAllMessages, onSubscribeToConversation, onExit, onLogout, onUpdateProfile, onUpdateAvatar, onUpdatePrivacy, onLoadApprovedPeople, onSetApprovedPerson, onAskAssistant, vaultClient, isExiting = false, isEntering = false }: Props) {
 
   const [joinedGroups, setJoinedGroups] = React.useState<string[]>(() => joinedGroupIds || []);
   const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
@@ -336,7 +339,24 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const [blockedStudents, setBlockedStudents] = React.useState<Array<{ blocked_id: string; display_name: string | null; nickname: string | null; student_id: string | null; avatar_url: string | null; blocked_at: string }>>([]);
   const [blockedStudentsLoading, setBlockedStudentsLoading] = React.useState(false);
   const [blockedStudentsError, setBlockedStudentsError] = React.useState("");
-  const [conversationAppearance, setConversationAppearance] = React.useState<MtuConversationAppearance>({ chat_theme: "convo", wallpaper_variant: "plain" });
+  const [conversationAppearance, setConversationAppearance] = React.useState<MtuConversationAppearance>({ background_image_url: null, background_image_path: null });
+  React.useEffect(() => {
+    const panel = document.querySelector<HTMLElement>(".thread-panel");
+    if (!panel) return;
+    if (conversationAppearance.background_image_url) {
+      panel.style.setProperty("background-image", `url(${JSON.stringify(conversationAppearance.background_image_url)})`, "important");
+      panel.style.setProperty("background-size", "cover", "important");
+      panel.style.setProperty("background-position", "center", "important");
+      panel.style.setProperty("background-attachment", "scroll", "important");
+      panel.style.setProperty("background-repeat", "no-repeat", "important");
+    } else {
+      panel.style.removeProperty("background-image");
+      panel.style.removeProperty("background-size");
+      panel.style.removeProperty("background-position");
+      panel.style.removeProperty("background-attachment");
+      panel.style.removeProperty("background-repeat");
+    }
+  }, [activeView, conversationAppearance]);
   React.useEffect(() => {
     const programmeSelect = document.querySelector<HTMLSelectElement>('select[aria-label="Edit programme"]');
     if (!programmeSelect) return;
@@ -443,12 +463,19 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
         body: item.body,
         createdAt: item.created_at,
         conversationId: item.conversation_id || undefined,
+        connectionRequestId: item.notification_type === "connection"
+          ? (typeof item.payload?.request_id === "string" ? item.payload.request_id : item.entity_id || undefined)
+          : undefined,
         unread: !item.read_at,
       })));
     });
     const unsubscribe = onSubscribeToNotifications?.((raw) => {
       const id = typeof raw.id === "string" ? raw.id : "";
       if (!id) return;
+      if (raw.__deleted === true || raw.read_at) {
+        setActivityNotifications((current) => current.filter((item) => item.id !== id));
+        return;
+      }
       const notificationType = String(raw.notification_type || "message");
       const next: ActivityNotification = {
         id,
@@ -457,6 +484,9 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
         body: String(raw.body || ""),
         createdAt: String(raw.created_at || new Date().toISOString()),
         conversationId: typeof raw.conversation_id === "string" ? raw.conversation_id : undefined,
+        connectionRequestId: notificationType === "connection"
+          ? (typeof (raw.payload as Record<string, unknown> | undefined)?.request_id === "string" ? String((raw.payload as Record<string, unknown>).request_id) : typeof raw.entity_id === "string" ? raw.entity_id : undefined)
+          : undefined,
         unread: !raw.read_at,
       };
       setActivityNotifications((current) => [next, ...current.filter((item) => item.id !== id)].slice(0, 100));
@@ -498,6 +528,14 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const handledGroupInviteRef = React.useRef(false);
   const handledProfileLinkRef = React.useRef(false);
   const handledMessageLinkRef = React.useRef(false);
+  React.useEffect(() => {
+    if (activeView !== "profile") return;
+    const row = document.querySelector<HTMLElement>(".profile-id-row");
+    if (!row) return;
+    row.querySelector(".convo-profile-share-trigger")?.remove();
+    const trigger = document.createElement("button"); trigger.type = "button"; trigger.className = "text-link convo-profile-share-trigger"; trigger.setAttribute("aria-label", "Copy public student ID"); trigger.textContent = "Copy ID"; trigger.addEventListener("click", () => { void shareMyProfile(); }); row.append(trigger);
+    return () => trigger.remove();
+  }, [activeView, studentId]);
   React.useEffect(() => {
     if (activeView !== "messages") return;
     threadMessages.forEach((message) => {
@@ -576,7 +614,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
       if (!active || settled) return;
       settled = true;
       if (result.error) { setDirectoryError(result.error.message); setLiveStudents([]); }
-      else setLiveStudents(result.data.map((student, index) => ({ id: student.id, studentId: student.student_id, avatarUrl: student.avatar_url, isSelf: Boolean(student.is_self), name: student.display_name, initials: student.display_name.slice(0, 2).toUpperCase(), programme: student.programme || "", department: student.department || "", level: student.level || "", bio: student.bio || "", tone: ["rose", "sage", "butter", "apricot"][index % 4], status: student.status_text || "", mutual: "" })));
+      else setLiveStudents(result.data.map((student, index) => ({ id: student.id, studentId: student.student_id || "", avatarUrl: student.avatar_url, isSelf: Boolean(student.is_self), name: student.display_name, initials: student.display_name.slice(0, 2).toUpperCase(), programme: student.programme || "", department: student.department || "", level: student.level || "", bio: student.bio || "", tone: ["rose", "sage", "butter", "apricot"][index % 4], status: student.status_text || "", mutual: "" })));
       setDirectoryLoading(false);
     }).catch(() => {
       if (!active || settled) return;
@@ -605,7 +643,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     handledProfileLinkRef.current = true;
     void onSearchStudents(publicId).then((result) => {
       if (result.error || !result.data.length) { toast.error("This public profile can’t be opened", { description: result.error?.message || "The student may no longer be discoverable." }); return; }
-      const students = result.data.map((student, index) => ({ id: student.id, studentId: student.student_id, avatarUrl: student.avatar_url, isSelf: Boolean(student.is_self), name: student.display_name, initials: student.display_name.slice(0, 2).toUpperCase(), programme: student.programme || "", department: student.department || "", level: student.level || "", bio: student.bio || "", tone: ["rose", "sage", "butter", "apricot"][index % 4], status: student.status_text || "", mutual: "" }));
+      const students = result.data.map((student, index) => ({ id: student.id, studentId: student.student_id || "", avatarUrl: student.avatar_url, isSelf: Boolean(student.is_self), name: student.display_name, initials: student.display_name.slice(0, 2).toUpperCase(), programme: student.programme || "", department: student.department || "", level: student.level || "", bio: student.bio || "", tone: ["rose", "sage", "butter", "apricot"][index % 4], status: student.status_text || "", mutual: "" }));
       const sharedStudent = students.find((student) => !student.isSelf) || students[0];
       setLiveStudents(students); setDirectoryQuery(publicId); setActiveView("discover"); setPeekStudent(sharedStudent); window.history.replaceState({}, "", window.location.pathname);
     }).catch(() => toast.error("This public profile can’t be opened", { description: "Please try the link again." }));
@@ -866,7 +904,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
 
   const openView = (view: DashboardView) => { setActiveView(view); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const saveProfileDraft = async (event: React.FormEvent) => { event.preventDefault(); if (!onUpdateProfile || profileSaving) return; setProfileSaving(true); const result = await onUpdateProfile(profileDraft); setProfileSaving(false); if (!result.ok) { toast.error("We couldn’t update your profile", { description: result.error || "Please try again shortly." }); return; } setShowEditProfile(false); toast.success("Profile updated", { description: "Your student identity is current." }); };
-  const updatePrivacy = async (field: keyof ProfileVisibility) => { if (!onUpdatePrivacy || privacySaving) return; const next = { ...visibilityDraft, [field]: !visibilityDraft[field] }; setVisibilityDraft(next); setPrivacySaving(true); const result = await onUpdatePrivacy(next); setPrivacySaving(false); if (!result.ok) { setVisibilityDraft(visibilityDraft); toast.error("We couldn’t update privacy", { description: result.error || "Please try again shortly." }); return; } toast.success("Privacy updated", { description: `${field[0].toUpperCase() + field.slice(1)} is now ${next[field] ? "public" : "private"}.` }); };
+  const updatePrivacy = async (field: keyof ProfileVisibility) => { if (!onUpdatePrivacy || privacySaving) return; const next = { ...visibilityDraft, [field]: !visibilityDraft[field] }; setVisibilityDraft(next); setPrivacySaving(true); const result = await onUpdatePrivacy(next); setPrivacySaving(false); if (!result.ok) { setVisibilityDraft(visibilityDraft); toast.error("We couldn’t update privacy", { description: result.error || "Please try again shortly." }); return; } const label = field === "allow_public_id_copy" ? "Public ID copying" : field[0].toUpperCase() + field.slice(1); toast.success("Privacy updated", { description: `${label} is now ${next[field] ? "on" : "off"}.` }); };
   React.useEffect(() => {
     if (activeView !== "settings" || messagingPrivacyLoaded || !onLoadPrivacySettings) return;
     void onLoadPrivacySettings().then((result) => {
@@ -944,7 +982,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     <section className="dashboard-lower-grid"><button className="dashboard-feature-card feature-library" onClick={() => openView("discover")}><span className="feature-icon"><Sparkles size={18} /></span><span className="eyebrow dark">Campus directory</span><strong>Find your<br /><em>next conversation.</em></strong><small>Discover verified classmates in your programme and college.</small><ArrowRight size={16} /></button><button className="dashboard-feature-card feature-mtu" onClick={() => openView("discover")}><span className="feature-icon"><ShieldCheck size={18} /></span><span className="eyebrow dark">MTU guide</span><strong>Made for the<br /><em>way campus moves.</em></strong><small>Explore programmes, colleges, circles, and the people making MTU feel connected.</small><ArrowRight size={16} /></button></section>
   </>;
 
-  const renderDiscover = () => <section className="workspace-view discover-view"><div className="workspace-heading"><div><span className="eyebrow dark">The directory</span><h1>Find your<br /><em>people.</em></h1><p>Search by a public student ID, name, programme, department, or level. MTU email addresses stay private.</p></div><div className="workspace-stat"><strong>{filteredStudents.length}</strong><span>matching profiles</span></div></div><div className="directory-search"><Search size={19} /><input value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="Try MTU-26-7K4Q2 or Computer Science" aria-label="Global search" /><kbd>⌘ K</kbd></div><div className="directory-filters"><button className="filter-chip is-active" onClick={() => setDirectoryQuery("")}>All students</button>{major && <button className="filter-chip" onClick={() => setDirectoryQuery(major)}>{major}</button>}{level && <button className="filter-chip" onClick={() => setDirectoryQuery(level)}>{level}</button>}{department && <button className="filter-chip" onClick={() => setDirectoryQuery(department)}>{department}</button>}</div>{directoryLoading && <div className="directory-empty"><span className="pulse-dot" /><span>Searching MTU profiles…</span></div>}{directoryError && <div className="directory-empty"><strong>Directory needs one more setup step.</strong><span>Apply the live student-directory SQL in your Supabase project, then try again.</span></div>}<div className="directory-grid">{filteredStudents.map((student) => { const state = requestStates[student.id] || "idle"; const menuOpen = openStudentMenuId === student.id; return   <article className="student-card" key={student.id}><div className={`student-avatar ${student.tone}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></div><div className="student-card-main"><div className="student-card-name"><div><h3>{student.name}</h3>{student.status && <span>{student.status}</span>}</div><div className="student-card-menu"><button className="icon-button subtle" aria-label={`More options for ${student.name}`} aria-expanded={menuOpen} onClick={() => setOpenStudentMenuId(menuOpen ? "" : student.id)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="student-card-popover" role="menu"><button role="menuitem" onClick={() => { setPeekStudent(student); setOpenStudentMenuId(""); }}><UserRound size={14} /> View profile</button><button role="menuitem" onClick={() => { void navigator.clipboard?.writeText(student.studentId); setOpenStudentMenuId(""); }}><IdCard size={14} /> Copy student ID</button>{state === "connected" ? <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void startConversation(student); }}><MessageCircle size={14} /> Message</button> : <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void sendRequest(student); }}><Users size={14} /> {state === "pending" ? "Request pending" : "Connect"}</button>}</div>}</div></div>{(student.programme || student.level) && <p>{[student.programme, student.level].filter(Boolean).join(" · ")}</p>}{state === "connected" ? <button className="student-request connected" onClick={() => void startConversation(student)}><MessageCircle size={15} /> Message</button> : <button className={`student-request ${state}`} onClick={() => void sendRequest(student)}>{state === "pending" ? <><Check size={15} /> Request sent</> : <><Send size={15} /> Connect</>}</button>}</div></article>; })}</div>{!filteredStudents.length && <div className="directory-empty"><Search size={22} /><strong>No student found yet.</strong><span>Try the public ID, programme, or level.</span></div>}{peekStudent && <div className="student-profile-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="student-profile-sheet" role="dialog" aria-modal="true" aria-labelledby="student-profile-title" onClick={(event) => event.stopPropagation()}><button className="student-profile-close" aria-label="Close profile" onClick={() => setPeekStudent(null)}>×</button>  <div className={`student-profile-avatar ${peekStudent.tone}`}>{peekStudent.avatarUrl ? <img src={peekStudent.avatarUrl} alt="" /> : peekStudent.initials}</div><span className="eyebrow dark">MTU student profile</span><h2 id="student-profile-title">{peekStudent.name}</h2>{peekStudent.status && <p className="student-profile-status">{peekStudent.status}</p>}<div className="student-profile-facts">{peekStudent.programme && <div><span>Programme</span><b>{peekStudent.programme}</b></div>}{peekStudent.department && <div><span>College / department</span><b>{peekStudent.department}</b></div>}{peekStudent.level && <div><span>Level</span><b>{peekStudent.level}</b></div>}</div><div className="student-profile-actions">{(requestStates[peekStudent.id] || "idle") === "connected" ? <button className="primary-button" onClick={() => void startConversation(peekStudent)}><MessageCircle size={15} /> Message</button> : <button className="primary-button" onClick={() => void sendRequest(peekStudent)}><Users size={15} /> Connect</button>}<button className="outline-button" onClick={() => setPeekStudent(null)}>Close</button></div></section></div>}</section>;
+  const renderDiscover = () => <section className="workspace-view discover-view"><div className="workspace-heading"><div><span className="eyebrow dark">The directory</span><h1>Find your<br /><em>people.</em></h1><p>Search by a public student ID, name, programme, department, or level. MTU email addresses stay private.</p></div><div className="workspace-stat"><strong>{filteredStudents.length}</strong><span>matching profiles</span></div></div><div className="directory-search"><Search size={19} /><input value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="Try MTU-26-7K4Q2 or Computer Science" aria-label="Global search" /><kbd>⌘ K</kbd></div><div className="directory-filters"><button className="filter-chip is-active" onClick={() => setDirectoryQuery("")}>All students</button>{major && <button className="filter-chip" onClick={() => setDirectoryQuery(major)}>{major}</button>}{level && <button className="filter-chip" onClick={() => setDirectoryQuery(level)}>{level}</button>}{department && <button className="filter-chip" onClick={() => setDirectoryQuery(department)}>{department}</button>}</div>{directoryLoading && <div className="directory-empty"><span className="pulse-dot" /><span>Searching MTU profiles…</span></div>}{directoryError && <div className="directory-empty"><strong>Directory needs one more setup step.</strong><span>Apply the live student-directory SQL in your Supabase project, then try again.</span></div>}<div className="directory-grid">{filteredStudents.map((student) => { const state = requestStates[student.id] || "idle"; const menuOpen = openStudentMenuId === student.id; return   <article className="student-card" key={student.id}><div className={`student-avatar ${student.tone}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></div><div className="student-card-main"><div className="student-card-name"><div><h3>{student.name}</h3>{student.status && <span>{student.status}</span>}</div><div className="student-card-menu"><button className="icon-button subtle" aria-label={`More options for ${student.name}`} aria-expanded={menuOpen} onClick={() => setOpenStudentMenuId(menuOpen ? "" : student.id)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="student-card-popover" role="menu"><button role="menuitem" onClick={() => { setPeekStudent(student); setOpenStudentMenuId(""); }}><UserRound size={14} /> View profile</button>{student.studentId && <button role="menuitem" onClick={() => { void navigator.clipboard?.writeText(student.studentId); setOpenStudentMenuId(""); }}><IdCard size={14} /> Copy student ID</button>}{state === "connected" ? <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void startConversation(student); }}><MessageCircle size={14} /> Message</button> : <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void sendRequest(student); }}><Users size={14} /> {state === "pending" ? "Request pending" : "Connect"}</button>}</div>}</div></div>{(student.programme || student.level) && <p>{[student.programme, student.level].filter(Boolean).join(" · ")}</p>}{state === "connected" ? <button className="student-request connected" onClick={() => void startConversation(student)}><MessageCircle size={15} /> Message</button> : <button className={`student-request ${state}`} onClick={() => void sendRequest(student)}>{state === "pending" ? <><Check size={15} /> Request sent</> : <><Send size={15} /> Connect</>}</button>}</div></article>; })}</div>{!filteredStudents.length && <div className="directory-empty"><Search size={22} /><strong>No student found yet.</strong><span>Try the public ID, programme, or level.</span></div>}{peekStudent && <div className="student-profile-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="student-profile-sheet" role="dialog" aria-modal="true" aria-labelledby="student-profile-title" onClick={(event) => event.stopPropagation()}><button className="student-profile-close" aria-label="Close profile" onClick={() => setPeekStudent(null)}>×</button>  <div className={`student-profile-avatar ${peekStudent.tone}`}>{peekStudent.avatarUrl ? <img src={peekStudent.avatarUrl} alt="" /> : peekStudent.initials}</div><span className="eyebrow dark">MTU student profile</span><h2 id="student-profile-title">{peekStudent.name}</h2>{peekStudent.status && <p className="student-profile-status">{peekStudent.status}</p>}<div className="student-profile-facts">{peekStudent.programme && <div><span>Programme</span><b>{peekStudent.programme}</b></div>}{peekStudent.department && <div><span>College / department</span><b>{peekStudent.department}</b></div>}{peekStudent.level && <div><span>Level</span><b>{peekStudent.level}</b></div>}</div><div className="student-profile-actions">{(requestStates[peekStudent.id] || "idle") === "connected" ? <button className="primary-button" onClick={() => void startConversation(peekStudent)}><MessageCircle size={15} /> Message</button> : <button className="primary-button" onClick={() => void sendRequest(peekStudent)}><Users size={15} /> Connect</button>}<button className="outline-button" onClick={() => setPeekStudent(null)}>Close</button></div></section></div>}</section>;
 
   React.useEffect(() => {
     if (!onLoadConversations) return;
@@ -1156,17 +1194,19 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   React.useEffect(() => {
     if (!onLoadConversationAppearance || activeView !== "messages" || !selectedConversationId) return;
     let active = true;
-    void onLoadConversationAppearance(selectedConversationId).then((result) => {
+    const loadAppearance = () => { void onLoadConversationAppearance(selectedConversationId).then((result) => {
       if (active && !result.error && result.data) setConversationAppearance(result.data);
-    });
-    return () => { active = false; };
-  }, [activeView, onLoadConversationAppearance, selectedConversationId]);
+      else if (active && result.error) toast.error("Couldn’t load chat background", { description: result.error });
+    }); };
+    loadAppearance();
+    const unsubscribe = onSubscribeToConversationAppearance?.(selectedConversationId, loadAppearance);
+    return () => { active = false; unsubscribe?.(); };
+  }, [activeView, onLoadConversationAppearance, onSubscribeToConversationAppearance, selectedConversationId]);
   React.useEffect(() => {
     if (activeView !== "messages") return;
     const panel = document.querySelector<HTMLElement>(".thread-panel");
     if (!panel) return;
-    panel.dataset.chatTheme = conversationAppearance.chat_theme;
-    panel.dataset.wallpaper = conversationAppearance.wallpaper_variant;
+    if (!conversationAppearance.background_image_url) panel.style.removeProperty("background-image");
   }, [activeView, conversationAppearance]);
   React.useEffect(() => {
     if (!onLoadMessageInteractions || activeView !== "messages" || !selectedConversationId) return;
@@ -1470,12 +1510,116 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     void onLoadConversationAppearance(activeConversation.id).then((loaded) => {
       if (loaded.error || !loaded.data) { toast.error("Couldn’t load chat appearance", { description: loaded.error || "Apply the appearance SQL update first." }); return; }
       const host = document.createElement("div"); host.className = "convo-private-label-backdrop";
-      const themeOptions = [["convo", "Convo Burgundy"], ["cream", "Cream"], ["peach", "Peach"], ["sage", "Sage"], ["lavender", "Lavender"], ["midnight", "Midnight"]] as const;
-      const wallpaperOptions = [["plain", "Plain"], ["organic", "Organic lines"], ["campus", "Campus pattern"], ["gradient", "Soft gradient"]] as const;
-      host.innerHTML = `<form class="convo-private-label-dialog convo-utility-dialog convo-appearance-dialog" aria-label="Conversation appearance"><button type="button" aria-label="Close conversation appearance" class="convo-private-label-close">×</button><span class="eyebrow dark">Chat appearance</span><h2>Make it<br><em>yours.</em></h2><p>Only you see these choices. They change the mood of this conversation without changing its privacy.</p><label>Theme<select name="chat_theme">${themeOptions.map(([value, label]) => `<option value="${value}" ${loaded.data?.chat_theme === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Wallpaper<select name="wallpaper_variant">${wallpaperOptions.map(([value, label]) => `<option value="${value}" ${loaded.data?.wallpaper_variant === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><div><button type="button" class="outline-button">Cancel</button><button type="submit" class="primary-button">Save appearance</button></div></form>`;
-      const close = () => host.remove(); const form = host.querySelector("form") as HTMLFormElement;
-      host.addEventListener("click", (event) => { if (event.target === host) close(); }); host.querySelectorAll<HTMLButtonElement>('button[type="button"]').forEach((button) => button.addEventListener("click", close));
-      form.addEventListener("submit", (event) => { event.preventDefault(); const values = new FormData(form); const appearance: MtuConversationAppearance = { chat_theme: String(values.get("chat_theme") || "convo") as MtuConversationAppearance["chat_theme"], wallpaper_variant: String(values.get("wallpaper_variant") || "plain") as MtuConversationAppearance["wallpaper_variant"] }; void onSetConversationAppearance(activeConversation.id, appearance).then((saved) => { if (saved.error || !saved.data) toast.error("Couldn’t save chat appearance", { description: saved.error || "Please try again." }); else { setConversationAppearance(saved.data); toast.success("Chat appearance saved"); close(); } }); });
+      const initialBackgroundUrl = String(loaded.data?.background_image_url || "");
+      const initialBackgroundPath = String(loaded.data?.background_image_path || "");
+      const safeBackgroundUrl = initialBackgroundUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      const safeBackgroundPath = initialBackgroundPath.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      host.innerHTML = `<form class="convo-private-label-dialog convo-utility-dialog convo-appearance-dialog" aria-label="Conversation appearance"><button type="button" aria-label="Close conversation appearance" class="convo-private-label-close">×</button><span class="eyebrow dark">Chat appearance</span><h2>Set your<br><em>background.</em></h2><p>Choose one image for this conversation. Both people will see it.</p><label class="conversation-appearance-file">Background image<input type="file" name="background_image_file" accept="image/png,image/jpeg,image/webp" /></label>${initialBackgroundUrl ? `<div class="conversation-appearance-preview-wrap"><img class="conversation-appearance-preview" src="${safeBackgroundUrl}" alt="Conversation background preview" /><button type="button" class="text-link conversation-appearance-remove">Remove image</button></div>` : `<div class="conversation-appearance-preview-wrap"><img class="conversation-appearance-preview" hidden alt="Conversation background preview" /><button type="button" class="text-link conversation-appearance-remove" hidden>Remove image</button></div>`}<input type="hidden" name="background_image_path" value="${safeBackgroundPath}" /><div class="conversation-appearance-actions"><button type="button" class="outline-button">Cancel</button><button type="submit" class="primary-button">Save background</button></div></form>`;
+      const form = host.querySelector("form") as HTMLFormElement;
+      const backgroundFileInput = form.querySelector<HTMLInputElement>('[name="background_image_file"]');
+      const backgroundPathInput = form.querySelector<HTMLInputElement>('[name="background_image_path"]');
+      const previewImage = form.querySelector<HTMLImageElement>(".conversation-appearance-preview");
+      const removeImageButton = form.querySelector<HTMLButtonElement>(".conversation-appearance-remove");
+      let selectedBackgroundUrl = initialBackgroundUrl;
+      let selectedBackgroundPath = initialBackgroundPath;
+      let pendingUploadPath = "";
+      const removeBackgroundImage = async (path: string) => {
+        if (!path || !supabase) return;
+        const result = await removeConversationAppearanceImage(supabase, path, currentUserId);
+        if (result.error) toast.error("An unused background image could not be removed", { description: result.error });
+      };
+      const discardPendingUpload = () => {
+        void removeBackgroundImage(pendingUploadPath);
+        pendingUploadPath = "";
+      };
+      const close = () => { discardPendingUpload(); host.remove(); };
+      const syncPreview = (url: string | null, path: string | null) => {
+        selectedBackgroundUrl = url || "";
+        selectedBackgroundPath = path || "";
+        if (backgroundPathInput) backgroundPathInput.value = selectedBackgroundPath;
+        if (previewImage) {
+          if (selectedBackgroundUrl) {
+            previewImage.src = selectedBackgroundUrl;
+            previewImage.hidden = false;
+          } else {
+            previewImage.removeAttribute("src");
+            previewImage.hidden = true;
+          }
+        }
+        if (removeImageButton) removeImageButton.hidden = !selectedBackgroundUrl;
+      };
+      host.addEventListener("click", (event) => { if (event.target === host) close(); });
+      host.querySelectorAll<HTMLButtonElement>('button[type="button"]').forEach((button) => {
+        if (button.classList.contains("conversation-appearance-remove")) return;
+        button.addEventListener("click", close);
+      });
+      removeImageButton?.addEventListener("click", () => { discardPendingUpload(); syncPreview(null, null); });
+      backgroundFileInput?.addEventListener("change", async () => {
+        const file = backgroundFileInput.files?.[0];
+        if (!file) return;
+        const validation = validateConversationAppearanceImage(file);
+        if (!validation.valid) {
+          toast.error("Background image not saved", { description: validation.error });
+          backgroundFileInput.value = "";
+          syncPreview(selectedBackgroundUrl, selectedBackgroundPath);
+          return;
+        }
+        if (!supabase || !currentUserId) {
+          toast.error("Upload is temporarily unavailable.");
+          backgroundFileInput.value = "";
+          return;
+        }
+        const previousPendingUploadPath = pendingUploadPath;
+        let upload: Awaited<ReturnType<typeof uploadConversationAppearanceImage>>;
+        try {
+          upload = await uploadConversationAppearanceImage(supabase, file, currentUserId, activeConversation.id);
+        } catch (error) {
+          toast.error("Couldn’t upload the background image", { description: error instanceof Error ? error.message : "Please try again." });
+          backgroundFileInput.value = "";
+          return;
+        }
+        if (upload.error || !upload.url) {
+          toast.error("Couldn’t upload the background image", { description: upload.error || "Please try again." });
+          backgroundFileInput.value = "";
+          return;
+        }
+        if (!host.isConnected) {
+          void removeBackgroundImage(upload.path);
+          return;
+        }
+        void removeBackgroundImage(previousPendingUploadPath);
+        pendingUploadPath = upload.path;
+        syncPreview(upload.url, upload.path);
+        toast.success("Background image selected");
+        backgroundFileInput.value = "";
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const appearance: MtuConversationAppearance = {
+          background_image_url: selectedBackgroundUrl || null,
+          background_image_path: selectedBackgroundPath || null,
+        };
+        void onSetConversationAppearance(activeConversation.id, appearance).then((saved) => {
+          if (saved.error || !saved.data) toast.error("Couldn’t save chat background", { description: saved.error || "Please try again." });
+          else {
+            pendingUploadPath = "";
+            const [previousConversationId, previousOwnerId] = initialBackgroundPath.split("/");
+            if (
+              initialBackgroundPath &&
+              initialBackgroundPath !== saved.data.background_image_path &&
+              previousConversationId === activeConversation.id &&
+              previousOwnerId === currentUserId
+            ) {
+              void removeBackgroundImage(initialBackgroundPath);
+            }
+            setConversationAppearance(saved.data);
+            toast.success("Shared chat background saved");
+            host.remove();
+          }
+        }).catch((error: unknown) => {
+          toast.error("Couldn’t save chat background", { description: error instanceof Error ? error.message : "Please try again." });
+        });
+      });
       document.body.appendChild(host);
     });
   };
@@ -1494,9 +1638,9 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const openConversationSearchDialog = () => {
     if (!activeConversation || !onSearchConversationMessages) return;
     const host = document.createElement("div"); host.className = "convo-private-label-backdrop";
-    host.innerHTML = `<form class="convo-private-label-dialog convo-utility-dialog" aria-label="Search this conversation"><button type="button" aria-label="Close conversation search" class="convo-private-label-close">×</button><span class="eyebrow dark">Conversation search</span><h2>Find a message<br><em>in this chat.</em></h2><label for="convo-thread-search">Search phrase</label><input id="convo-thread-search" minlength="2" maxlength="120" placeholder="Try assignment, meeting, deadline…"><div class="convo-search-results" aria-live="polite"></div><div><button type="button" class="outline-button">Cancel</button><button type="submit" class="primary-button">Search</button></div></form>`;
-    const close = () => host.remove(); const form = host.querySelector("form") as HTMLFormElement; const input = host.querySelector("input") as HTMLInputElement; const results = host.querySelector(".convo-search-results") as HTMLDivElement;
-    host.addEventListener("click", (event) => { if (event.target === host) close(); }); host.querySelectorAll<HTMLButtonElement>('button[type="button"]').forEach((button) => button.addEventListener("click", close));
+    host.innerHTML = `<form class="convo-private-label-dialog convo-utility-dialog convo-search-dialog" aria-label="Search this conversation"><button type="button" aria-label="Close conversation search" class="convo-private-label-close">×</button><span class="eyebrow dark">Conversation search</span><h2>Find a message<br><em>in this chat.</em></h2><label for="convo-thread-search">Search phrase</label><input id="convo-thread-search" minlength="2" maxlength="120" placeholder="Try assignment, meeting, deadline…"><div class="convo-search-results" aria-live="polite"></div><div class="convo-search-actions"><button type="button" class="outline-button" data-close-search>Cancel</button><button type="submit" class="primary-button">Search</button></div></form>`;
+    const close = () => host.remove(); const form = host.querySelector("form") as HTMLFormElement; const input = host.querySelector("input") as HTMLInputElement; const results = host.querySelector(".convo-search-results") as HTMLDivElement; const cancelButton = host.querySelector<HTMLButtonElement>("[data-close-search]");
+    host.addEventListener("click", (event) => { if (event.target === host) close(); }); host.querySelector(".convo-private-label-close")?.addEventListener("click", close); cancelButton?.addEventListener("click", close);
     form.addEventListener("submit", (event) => { event.preventDefault(); const query = input.value.trim(); if (query.length < 2) { results.textContent = "Use at least two characters."; return; } results.textContent = "Searching…"; void onSearchConversationMessages(activeConversation.id, query).then((loaded) => { if (loaded.error) { results.textContent = loaded.error; return; } results.innerHTML = loaded.data.length ? loaded.data.map((message) => `<button type="button" data-search-message="${message.id}"><strong>${message.sender_display_name.replace(/</g, "&lt;")}</strong><span>${message.body.replace(/</g, "&lt;")}</span><small>${messageTime(message.created_at)}</small></button>`).join("") : "No messages matched that phrase."; results.querySelectorAll<HTMLButtonElement>("[data-search-message]").forEach((button) => button.addEventListener("click", () => { const messageId = button.dataset.searchMessage; if (!messageId) return; close(); document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); })); }); });
     document.body.appendChild(host); input.focus();
   };
@@ -1593,7 +1737,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     const isManager = ownRole === "owner" || ownRole === "admin";
     const canChangeGroupImage = Boolean(onUpdateGroupImage) && isManager;
     const safeName = activeConversation.name.replace(/</g, "&lt;");
-    const directActions = `<div class="profile-sheet-utilities"><button type="button" data-copy-public-profile aria-label="Copy public student ID">Copy public student ID</button><button type="button" data-conversation-search>Search this chat</button><button type="button" data-conversation-notifications>Notifications</button><button type="button" data-conversation-appearance>Appearance</button><button type="button" data-profile-rename>Name this chat</button><button type="button" data-profile-archive>${activeConversation.isArchived ? "Unarchive from inbox" : "Archive conversation"}</button></div>${activeConversation.counterpartId && (onReportStudent || onBlockStudent) ? `<details class="profile-sheet-safety"><summary>Safety & privacy</summary><div>${onReportStudent ? '<button type="button" data-profile-report>Report student</button>' : ""}${onBlockStudent ? '<button type="button" data-profile-block class="is-danger">Block student</button>' : ""}</div></details>` : ""}`;
+    const directActions = `<div class="profile-sheet-utilities"><button type="button" data-conversation-search>Search this chat</button><button type="button" data-conversation-notifications>Notifications</button>${onLoadConversationAppearance && onSetConversationAppearance ? '<button type="button" data-conversation-appearance>Appearance</button>' : ""}<button type="button" data-profile-rename>Name this chat</button><button type="button" data-profile-archive>${activeConversation.isArchived ? "Unarchive from inbox" : "Archive conversation"}</button></div>${activeConversation.counterpartId && (onReportStudent || onBlockStudent) ? `<details class="profile-sheet-safety"><summary>Safety & privacy</summary><div>${onReportStudent ? '<button type="button" data-profile-report>Report student</button>' : ""}${onBlockStudent ? '<button type="button" data-profile-block class="is-danger">Block student</button>' : ""}</div></details>` : ""}`;
     const isPrivate = privateGroupIds.has(activeConversation.id);
     const groupPrivacyAction = ownRole === "owner" && onSetGroupPrivate ? `<button type="button" data-group-private>${isPrivate ? "Make group public" : "Make group private"}</button>` : "";
     const groupActions = `<div class="profile-sheet-utilities profile-sheet-utilities-group"><div class="profile-sheet-core-actions"><span class="profile-sheet-section-label">Group settings</span>${canChangeGroupImage ? '<button type="button" data-group-image>Change group photo</button>' : ""}<button type="button" data-group-members>${isManager ? "Add or manage members" : "View members"}</button>${groupPrivacyAction}<button type="button" data-conversation-notifications>Group notifications</button><button type="button" data-conversation-search>Search this chat</button><button type="button" data-group-polls>Polls</button><button type="button" data-group-tasks>Tasks</button></div><details class="profile-sheet-advanced"><summary>More group tools</summary><div><button type="button" data-group-events>Events</button><button type="button" data-group-notes>Shared notes</button><button type="button" data-group-announcements>Announcements</button><button type="button" data-group-share>Copy invite link</button><button type="button" data-group-qr>Show QR invite</button>${isManager ? '<button type="button" data-group-rotate>Rotate invite link</button><button type="button" data-group-requests>Join requests</button>' : ""}${ownRole === "owner" ? `<button type="button" data-group-permissions>Permissions</button><button type="button" data-group-end class="is-danger">End group</button>` : ""}</div></details></div>`;
@@ -1605,7 +1749,6 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     const close = () => host.remove();
     host.addEventListener("click", (event) => { if (event.target === host) close(); }); host.querySelector(".convo-private-label-close")?.addEventListener("click", close);
     host.querySelector<HTMLButtonElement>("[data-profile-rename]")?.addEventListener("click", () => { close(); openPrivateLabelDialog(); });
-    host.querySelector<HTMLButtonElement>("[data-copy-public-profile]")?.addEventListener("click", () => { void shareMyProfile(); });
     host.querySelector<HTMLButtonElement>("[data-profile-archive]")?.addEventListener("click", () => { close(); void (activeConversation.isArchived ? unarchiveCurrentConversation() : archiveCurrentConversation()); });
     host.querySelector<HTMLButtonElement>("[data-profile-report]")?.addEventListener("click", () => { close(); openReportDialog(); });
     host.querySelector<HTMLButtonElement>("[data-profile-block]")?.addEventListener("click", () => { close(); void blockCurrentStudent(); });
@@ -1681,12 +1824,11 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     const bio = student?.bio?.trim();
     const host = document.createElement("div");
     host.className = "student-profile-backdrop conversation-public-profile-backdrop";
-    host.innerHTML = `<section class="student-profile-sheet" role="dialog" aria-modal="true" aria-label="Student profile"><button class="student-profile-close" aria-label="Close profile">×</button><div class="student-profile-avatar ${escapeHtml(student?.tone || "sage")}">${avatar}</div><span class="eyebrow dark">MTU student profile</span><h2 id="conversation-student-profile-title">${escapeHtml(name)}</h2>${student?.status ? `<p class="student-profile-status">${escapeHtml(student.status)}</p>` : ""}<div class="student-profile-facts">${student?.programme ? `<div><span>Programme</span><b>${escapeHtml(student.programme)}</b></div>` : ""}${student?.department ? `<div><span>College / department</span><b>${escapeHtml(student.department)}</b></div>` : ""}${student?.level ? `<div><span>Level</span><b>${escapeHtml(student.level)}</b></div>` : ""}${bio ? `<div class="student-profile-bio"><span>Bio</span><p>${escapeHtml(bio)}</p></div>` : ""}</div><div class="student-profile-actions"><button class="outline-button" data-copy-public-profile aria-label="Copy public student ID">Copy public student ID</button><button class="outline-button" data-close-profile>Close</button></div></section>`;
+    host.innerHTML = `<section class="student-profile-sheet" role="dialog" aria-modal="true" aria-label="Student profile"><button class="student-profile-close" aria-label="Close profile">×</button><div class="student-profile-avatar ${escapeHtml(student?.tone || "sage")}">${avatar}</div><span class="eyebrow dark">MTU student profile</span><h2 id="conversation-student-profile-title">${escapeHtml(name)}</h2>${student?.status ? `<p class="student-profile-status">${escapeHtml(student.status)}</p>` : ""}<div class="student-profile-facts">${student?.programme ? `<div><span>Programme</span><b>${escapeHtml(student.programme)}</b></div>` : ""}${student?.department ? `<div><span>College / department</span><b>${escapeHtml(student.department)}</b></div>` : ""}${student?.level ? `<div><span>Level</span><b>${escapeHtml(student.level)}</b></div>` : ""}${bio ? `<div class="student-profile-bio"><span>Bio</span><p>${escapeHtml(bio)}</p></div>` : ""}</div><div class="student-profile-actions"><button class="outline-button" data-close-profile>Close</button></div></section>`;
     const close = () => host.remove();
     host.addEventListener("click", (event) => { if (event.target === host) close(); });
     host.querySelector(".student-profile-close")?.addEventListener("click", close);
     host.querySelector("[data-close-profile]")?.addEventListener("click", close);
-    host.querySelector("[data-copy-public-profile]")?.addEventListener("click", () => { void shareMyProfile(); });
     document.body.appendChild(host);
   };
   React.useEffect(() => {
@@ -1745,14 +1887,6 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     const trigger = document.createElement("button"); trigger.type = "button"; trigger.className = "convo-saved-messages-trigger"; trigger.setAttribute("aria-label", "Open saved messages"); trigger.textContent = "Saved messages"; trigger.addEventListener("click", openSavedMessagesDialog); list.querySelector(".conversation-search")?.after(trigger);
     return () => trigger.remove();
   }, [activeView, onLoadSavedMessages]);
-  React.useEffect(() => {
-    if (activeView !== "profile") return;
-    const row = document.querySelector<HTMLElement>(".profile-id-row");
-    if (!row) return;
-    row.querySelector(".convo-profile-share-trigger")?.remove();
-    const trigger = document.createElement("button"); trigger.type = "button"; trigger.className = "text-link convo-profile-share-trigger"; trigger.setAttribute("aria-label", "Copy public student ID"); trigger.textContent = "Copy ID"; trigger.addEventListener("click", () => { void shareMyProfile(); }); row.append(trigger);
-    return () => trigger.remove();
-  }, [activeView, studentId]);
   React.useEffect(() => {
     if (activeView !== "messages") return;
     const panel = document.querySelector<HTMLElement>(".thread-panel");
@@ -2031,34 +2165,37 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   };
   const pendingRequests = connectionRequests.filter((request) => request.direction === "received" && request.status === "pending");
   const renderNotifications = () => {
-    const connectionItems: ActivityNotification[] = pendingRequests.map((request) => ({
-      id: `connection:${request.id}`,
-      kind: "connection",
-      title: `${request.requester_display_name || "An MTU student"} wants to connect`,
-      body: request.requester_student_id ? `Public ID · ${request.requester_student_id}` : "Verified MTU student",
-      createdAt: new Date().toISOString(),
-      unread: true,
-    }));
-    const unreadConversationItems: ActivityNotification[] = liveConversations.filter((conversation) => conversation.unread || conversation.isMarkedUnread).map((conversation) => ({
-      id: `conversation:${conversation.id}`,
-      kind: conversation.kind === "group" ? "group" : "message",
-      title: conversation.kind === "group" ? `${conversation.name} has new activity` : `New message from ${conversation.name}`,
-      body: conversation.message || "Open the conversation to view the latest update.",
-      createdAt: new Date().toISOString(),
-      conversationId: conversation.id,
-      unread: true,
-    }));
-    const items = [...connectionItems, ...unreadConversationItems, ...activityNotifications].filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-    const openNotification = (item: ActivityNotification) => {
+    const items = activityNotifications;
+    const openNotification = async (item: ActivityNotification) => {
       if (item.conversationId) {
         setSelectedConversationId(item.conversationId);
         setActiveView("messages");
         void onSetConversationRailState?.(item.conversationId, null, null, null, false);
       }
-      setActivityNotifications((current) => current.map((entry) => entry.id === item.id ? { ...entry, unread: false } : entry));
-      if (item.id && onMarkNotificationRead) void onMarkNotificationRead(item.id);
+      if (!onMarkNotificationRead) {
+        toast.error("This notification could not be dismissed", { description: "Notification storage is not connected." });
+        return;
+      }
+      const result = await onMarkNotificationRead(item.id);
+      if (result.error) {
+        toast.error("This notification could not be dismissed", { description: result.error });
+        return;
+      }
+      setActivityNotifications((current) => current.filter((entry) => entry.id !== item.id));
     };
-    return <section className="workspace-view notifications-view"><div className="workspace-heading"><div><span className="eyebrow dark">A little movement</span><h1>Your<br /><em>notifications.</em></h1><p>Messages, calls, connection requests, and group activity appear here.</p></div><div className="workspace-heading-actions"><button type="button" className="outline-button" onClick={() => { setActivityNotifications((current) => current.filter((item) => item.unread)); if (onClearNotifications) void onClearNotifications(); }} disabled={!activityNotifications.some((item) => !item.unread)}>Clear activity</button></div></div><div className="notification-stack">{items.length ? items.map((item) => <article className={`notification-card ${item.unread ? "is-unread" : ""}`} key={item.id} onClick={() => openNotification(item)}><span className="notification-mark rose">{item.kind === "connection" ? <Users size={16} /> : item.kind === "group" ? <Bell size={16} /> : <MessageCircle size={16} />}</span><span><b>{item.title}</b><small>{item.body}</small><small>{new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small></span>{item.kind === "connection" ? <button type="button" className="primary-button" onClick={(event) => { event.stopPropagation(); const request = pendingRequests.find((candidate) => `connection:${candidate.id}` === item.id); if (request) void acceptRequest(request); }}>Accept</button> : <ArrowRight size={16} aria-hidden="true" />}</article>) : <div className="directory-empty"><Bell size={22} /><strong>You’re all caught up.</strong><span>Messages, calls, requests, and group updates will appear here.</span></div>}</div></section>;
+    const clearActivity = async () => {
+      if (!onClearNotifications) {
+        toast.error("Notifications could not be cleared", { description: "Notification storage is not connected." });
+        return;
+      }
+      const result = await onClearNotifications();
+      if (result.error) {
+        toast.error("Notifications could not be cleared", { description: result.error });
+        return;
+      }
+      setActivityNotifications([]);
+    };
+    return <section className="workspace-view notifications-view"><div className="workspace-heading"><div><span className="eyebrow dark">A little movement</span><h1>Your<br /><em>notifications.</em></h1><p>Messages, calls, connection requests, and group activity appear here.</p></div><div className="workspace-heading-actions"><button type="button" className="outline-button" onClick={() => void clearActivity()} disabled={activityNotifications.length === 0}>Clear activity</button></div></div><div className="notification-stack">{items.length ? items.map((item) => <article className={`notification-card ${item.unread ? "is-unread" : ""}`} key={item.id} onClick={() => void openNotification(item)}><span className="notification-mark rose">{item.kind === "connection" ? <Users size={16} /> : item.kind === "group" ? <Bell size={16} /> : <MessageCircle size={16} />}</span><span><b>{item.title}</b><small>{item.body}</small><small>{new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small></span>{item.kind === "connection" ? <button type="button" className="primary-button" onClick={(event) => { event.stopPropagation(); void openNotification(item); const request = pendingRequests.find((candidate) => candidate.id === item.connectionRequestId); if (request) void acceptRequest(request); }}>Accept</button> : <ArrowRight size={16} aria-hidden="true" />}</article>) : <div className="directory-empty"><Bell size={22} /><strong>You’re all caught up.</strong><span>Messages, calls, requests, and group updates will appear here.</span></div>}</div></section>;
   };
 
   const renderGroups = () => { const remoteGroups = liveGroupDirectory.map((group, index) => ({ id: group.conversation_id, name: group.title, meta: group.category ? group.category.replace("_", " & ") : "MTU group", members: group.member_count, tone: ["rose", "sage", "butter", "apricot"][index % 4], category: group.category, isMember: group.is_member, requestStatus: group.my_request_status, imageUrl: group.group_image_url })); const sourceGroups = (onSearchGroups ? remoteGroups : groups.map((group) => ({ ...group, category: null, isMember: joinedGroups.includes(String(group.id)), requestStatus: null, imageUrl: null }))).filter((group) => !privateGroupIds.has(String(group.id))); const normalizedQuery = groupSearchQuery.trim().toLowerCase(); const filteredGroups = sourceGroups.filter((group) => { const haystack = `${group.name} ${group.meta}`.toLowerCase(); const categoryMatch = groupCategoryFilter === "all" || group.category === groupCategoryFilter || (!onSearchGroups && haystack.includes(groupCategoryFilter)); return categoryMatch && (!normalizedQuery || haystack.includes(normalizedQuery)); }); return <section className="workspace-view premium-feature-view"><div className="workspace-heading"><div><span className="eyebrow dark">Your communities</span><h1>Campus<br /><em>groups.</em></h1><p>Course circles, societies, and project rooms live here. Every group uses real membership data from Convo.</p></div><div className="workspace-heading-actions"><button className="primary-button" onClick={() => void createGroupConversation()}><Users size={16} /> Create group</button></div></div><div className="group-discovery-controls"><label className="sr-only" htmlFor="group-discovery-search">Search groups</label><input id="group-discovery-search" value={groupSearchQuery} onChange={(event) => setGroupSearchQuery(event.target.value)} placeholder="Search groups, courses, programmes..." /><div className="group-category-tabs" role="tablist" aria-label="Group categories">{["all", "academic", "social", "sports", "technology", "business", "arts", "club", "project", "code_tech", "cruise"].map((category) => <button type="button" role="tab" aria-selected={groupCategoryFilter === category} className={groupCategoryFilter === category ? "is-active" : ""} key={category} onClick={() => setGroupCategoryFilter(category)}>{category === "all" ? "All" : category === "code_tech" ? "Code & Tech" : category.charAt(0).toUpperCase() + category.slice(1)}</button>)}</div></div>{groupDirectoryLoading ? <div className="group-row-list" aria-busy="true"><div className="group-directory-skeleton" /><div className="group-directory-skeleton" /><div className="group-directory-skeleton" /></div> : groupDirectoryError ? <div className="premium-empty-state"><h2>Groups are unavailable.</h2><p>{groupDirectoryError}</p></div> : sourceGroups.length ? <div className="group-row-list">{filteredGroups.map((group) => { const joined = joinedGroups.includes(String(group.id)); return <article className={`group-row ${group.tone}`} key={group.id}><span className="group-row-mark" aria-hidden="true">{group.imageUrl ? <img className={loadedAvatarImages[`group:${group.id}:${group.imageUrl}`] ? "is-loaded" : ""} src={group.imageUrl} alt="" loading="lazy" onLoad={() => setLoadedAvatarImages((current) => ({ ...current, [`group:${group.id}:${group.imageUrl}`]: true }))} /> : <Users size={17} />}</span><div><span className="eyebrow dark">{joined ? "Your circle" : "Discover group"}</span><h2>{group.name}</h2><p>{group.meta}</p></div><small>{group.members ? `${group.members} members` : "Membership updates live"}</small><button className={joined ? "outline-button" : "primary-button"} onClick={() => { if (onSearchGroups) { if (joined || group.isMember) { setSelectedConversationId(String(group.id)); setActiveView("messages"); } else if (group.requestStatus === "pending") return; else void requestToJoinGroup(String(group.id), group.name); } else joinGroup(String(group.id), group.name); }}>{joined || group.isMember ? "Open group" : group.requestStatus === "pending" ? "Request pending" : "Request to join"} <ArrowRight size={14} /></button></article>; })}{!filteredGroups.length && <div className="premium-empty-state"><h2>No live groups match that search.</h2><p>Try another course, programme, or category.</p></div>}</div> : <div className="premium-empty-state"><span className="empty-orbit"><Users size={22} /></span><h2>Your groups will gather here.</h2><p>Create a private group chat or join a verified campus circle when one is available.</p><button className="primary-button" onClick={() => void createGroupConversation()}>Create a group <ArrowRight size={14} /></button></div>}</section>; };
@@ -2387,7 +2524,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const renderVault = () => <VaultPanel client={vaultClient || null} />;
   const renderAssistant = () => <section className="workspace-view premium-feature-view assistant-view"><input ref={assistantFileInputRef} className="sr-only" type="file" multiple accept="image/*,.pdf,.txt,.csv,.json" onChange={(event) => { addAssistantFiles(event.target.files); event.currentTarget.value = ""; }} /><div className="assistant-heading"><div><span className="eyebrow dark"><Bot size={13} /> Timothy · Study assistant</span><h1>Study with<br /><em>context.</em></h1><p>Ask Timothy to explain, summarize, or work through a concept. He can use your shared-folder file list and any files or photos you attach.</p></div><div className="assistant-limit"><span>{assistantSecondsLeft ? `Time left · ${Math.floor(assistantSecondsLeft / 60)}:${String(assistantSecondsLeft % 60).padStart(2, "0")}` : "2-hour study window"}</span><small>Unlimited questions while active · 1-hour cooldown after</small></div></div><div className="assistant-launch"><div className="assistant-launch-bar"><span className="assistant-orb"><Bot size={22} /></span><div><strong>Hi, I’m Timothy.</strong><small>Upload a page, photo, or document when you want me to inspect it. I’ll remind you before your study window ends.</small></div></div>{assistantMessages.length > 0 && <div ref={assistantTranscriptRef} className="assistant-transcript">{assistantMessages.map((m, i) => <article key={i} className={`assistant-message ${m.role}`}><b>{m.role === "user" ? "You" : "Timothy"}</b>{m.role === "assistant" ? <><Streamdown>{m.content}</Streamdown><div className="assistant-message-tools"><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy</button><button type="button" className="ghost-button" onClick={() => downloadAssistantPdf(m.content)}><Download size={13} /> PDF</button></div></> : <><p>{m.content}</p><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy prompt</button></>}{m.attachmentNames?.length ? <div className="assistant-message-attachments">{m.attachmentNames.map((name) => <span key={name}><Paperclip size={12} />{name}</span>)}</div> : null}</article>)}</div>}<form className="assistant-form" onSubmit={(event) => { event.preventDefault(); const text = assistantDraft.trim(); if ((!text && !assistantAttachments.length) || assistantBusy || !onAskAssistant) return; const files = assistantAttachments; const next = [...assistantMessages, { role: "user" as const, content: text || "Please review these attachments.", attachmentNames: files.map((file) => file.name) }]; const sharedFiles = sharedFilesData.map((file) => ({ name: file.attachment_path?.split("/").pop() || "Shared file", mimeType: file.attachment_mime || "file" })); setAssistantMessages(next); setAssistantDraft(""); setAssistantAttachments([]); setAssistantBusy(true); void onAskAssistant(next.map(({ role, content }) => ({ role, content })), files, sharedFiles).then((answer) => { setAssistantMessages([...next, { role: "assistant" as const, content: answer.text }]); if (answer.sessionSeconds) setAssistantSecondsLeft(answer.sessionSeconds); }).catch((e: unknown) => toast.error(e instanceof Error ? e.message : "Timothy is unavailable.")).finally(() => setAssistantBusy(false)); }}><label htmlFor="assistant-question">What would you like help studying?</label><textarea id="assistant-question" value={assistantDraft} onChange={(event) => setAssistantDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Explain this passage, summarize a concept, or define a word…" rows={3} /><div className="assistant-composer-footer"><div className="assistant-attachment-list">{assistantAttachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip size={12} />{file.name}<button type="button" aria-label={`Remove ${file.name}`} onClick={() => setAssistantAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button></span>)}</div><div className="assistant-actions"><button type="button" className="outline-button" onClick={() => assistantFileInputRef.current?.click()} disabled={assistantAttachments.length >= 4}><Paperclip size={15} /> Add files or photos</button><button className="primary-button" type="submit" disabled={assistantBusy || !onAskAssistant}><MessageCircle size={15} /> {assistantBusy ? "Timothy is thinking…" : "Ask Timothy"}</button></div></div></form></div></section>;
 
-  const renderPrivacyControls = () => <article className="settings-privacy-card"><div><span className="eyebrow dark">Profile privacy</span><h2>Choose what<br /><em>students see.</em></h2><p>Your nickname and public student ID remain discoverable. Turn an academic field off to hide it from other students and your public card.</p></div><div className="privacy-control-list">{([['programme', 'Programme'], ['college', 'College'], ['level', 'Level'], ['incognito', 'Incognito mode'], ['allow_exact_id_lookup', 'Exact Convo ID lookup']] as const).map(([field, label]) => <label key={field} className="privacy-control"><span><b>{label}</b><small>{field === "incognito" ? (visibilityDraft[field] ? 'Only approved people can find you' : 'Discoverable to eligible verified students') : field === "allow_exact_id_lookup" ? (visibilityDraft[field] ? 'People with your exact ID can find you' : 'Exact ID lookup is disabled') : (visibilityDraft[field] ? 'Visible to eligible verified students' : 'Private to you')}</small></span><button type="button" role="switch" aria-label={`Show ${label} to students`} aria-checked={visibilityDraft[field]} className={`theme-toggle ${visibilityDraft[field] ? 'is-dark' : ''}`} onClick={() => void updatePrivacy(field)} disabled={privacySaving}><i /></button></label>)}</div></article>;
+  const renderPrivacyControls = () => <article className="settings-privacy-card"><div><span className="eyebrow dark">Profile privacy</span><h2>Choose what<br /><em>students see.</em></h2><p>Your public student ID is shared with other students by default. Turn off ID copying to remove it from directory profiles and profile actions.</p></div><div className="privacy-control-list">{([['programme', 'Programme'], ['college', 'College'], ['level', 'Level'], ['incognito', 'Incognito mode'], ['allow_exact_id_lookup', 'Exact Convo ID lookup'], ['allow_public_id_copy', 'Allow public ID copying']] as const).map(([field, label]) => <label key={field} className="privacy-control"><span><b>{label}</b><small>{field === "incognito" ? (visibilityDraft[field] ? 'Only approved people can find you' : 'Discoverable to eligible verified students') : field === "allow_exact_id_lookup" ? (visibilityDraft[field] ? 'People with your exact ID can find you' : 'Exact ID lookup is disabled') : field === "allow_public_id_copy" ? (visibilityDraft[field] ? 'Other students can see and copy your public ID' : 'Your public ID is hidden from other student profiles') : (visibilityDraft[field] ? 'Visible to eligible verified students' : 'Private to you')}</small></span><button type="button" role="switch" aria-label={field === "allow_public_id_copy" ? "Allow others to copy my public student ID" : `Show ${label} to students`} aria-checked={visibilityDraft[field]} className={`theme-toggle ${visibilityDraft[field] ? 'is-dark' : ''}`} onClick={() => void updatePrivacy(field)} disabled={privacySaving}><i /></button></label>)}</div></article>;
 
   const loadApprovedPeople = React.useCallback(async () => { if (!onLoadApprovedPeople) return; setApprovedPeopleLoading(true); const result = await onLoadApprovedPeople(); setApprovedPeopleLoading(false); if (result.error) setApprovedPeopleError(result.error); else { setApprovedPeopleError(""); setApprovedPeople(result.data); } }, [onLoadApprovedPeople]);
   React.useEffect(() => { if (activeView === "settings") void loadApprovedPeople(); }, [activeView, loadApprovedPeople]);
@@ -2412,7 +2549,7 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
 
   return <StudentIdCardVisibilityContext.Provider value={visibilityDraft}><main className={`dashboard-shell ${isDarkMode ? "theme-dark" : ""} ${isExiting ? "is-exiting" : ""} ${isEntering ? "is-entering" : ""}`}>
     <header className="dashboard-topbar"><button className="brand" onClick={() => openView("home")} aria-label="Open Convo home"><span className="brand-mark"><span /><span /><span /></span><span><b>Convo</b><small>MTU COMMUNITY</small></span></button><div className="dashboard-topbar-center"><span className="topbar-location"><span className="pulse-dot" /> {navLabel(activeView)}</span></div><div className="dashboard-actions"><button className="icon-button" aria-label={unreadConversationCount ? `Notifications, ${unreadConversationCount} unread messages` : "Notifications"} onClick={() => openView("notifications")}><Bell size={17} />{unreadConversationCount > 0 && <i className="notification-dot has-unread">{unreadConversationCount > 9 ? "9+" : unreadConversationCount}</i>}</button><button className="profile-chip" onClick={() => openView("profile")}><span className="profile-chip-avatar">{avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{(displayName || "MT").slice(0, 2).toUpperCase()}</span>}</span><b>{displayName || "Your profile"}</b><ChevronRight size={14} /></button><button className="logout-button" onClick={() => setShowLogoutConfirm(true)}>Log out</button></div></header>
-    <div className="dashboard-body"><aside className="convo-sidebar" aria-label="Convo navigation"><div className="sidebar-section-label">Workspace</div><nav>{sidebarNavItems.map((item) => <button key={item.view} className={`sidebar-nav-item ${activeView === item.view ? "is-active" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={`Open ${navLabel(item.view)}`}><span>{item.icon}</span><b>{navLabel(item.view)}</b>{item.badge && <i>{item.badge}</i>}</button>)}</nav></aside><nav ref={dockRef} className="convo-top-dock" aria-label="Convo workspace" onPointerMove={moveDock} onPointerLeave={resetDock}>{primaryNavItems.map((item) => <button key={item.view} className={`dock-item ${activeView === item.view ? "is-active" : ""} ${item.badge && (item.view === "messages" || item.view === "notifications") ? "has-unread" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={navLabel(item.view)}><span className="dock-icon-wrap">{item.icon}{item.badge && <i>{item.badge}</i>}</span><span className="dock-tooltip" role="tooltip">{navLabel(item.view)}</span></button>)}<span className="dock-divider" aria-hidden="true" /><div className="dock-more-wrap"><button className={`dock-item ${showMoreMenu ? "is-active" : ""}`} onClick={() => setShowMoreMenu((open) => !open)} aria-label="More" aria-expanded={showMoreMenu} aria-haspopup="menu"><MoreHorizontal size={17} /><span className="dock-tooltip" role="tooltip">More</span></button>{showMoreMenu && <div className="dock-menu" role="menu"><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("events"); }}><span>Events</span><small>Group events, polls, tasks, and announcements</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("settings"); }}><span>Settings</span><small>Personalize your space</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); setShowLogoutConfirm(true); }}><span>Log out</span><small>Close this session safely</small></button></div>}</div><span className="dock-status"><span className="pulse-dot" /><small>MTU verified</small></span></nav><div className="dashboard-atmosphere"><ConvoOrbit /></div><div className="dashboard-content">{activeView === "home" && renderHome()}{activeView === "discover" && renderDiscover()}{activeView === "messages" && renderMessages()}{activeView === "notifications" && renderNotifications()}{activeView === "profile" && renderProfile()}{activeView === "groups" && renderGroups()}{activeView === "campus" && renderCampus()}{activeView === "events" && renderEvents()}{activeView === "files" && renderFiles()}{activeView === "assistant" && renderAssistant()}{activeView === "vault" && renderVault()}{activeView === "settings" && renderSettings()}{activeView === "id" && renderDigitalId()}</div></div>
+    <div className="dashboard-body"><aside className="convo-sidebar" aria-label="Convo navigation"><div className="sidebar-section-label">Workspace</div><nav>{sidebarNavItems.map((item) => <button key={item.view} className={`sidebar-nav-item ${activeView === item.view ? "is-active" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={`Open ${navLabel(item.view)}`}><span>{item.icon}</span><b>{navLabel(item.view)}</b>{item.badge && <i>{item.badge}</i>}</button>)}</nav></aside><nav ref={dockRef} className="convo-top-dock" aria-label="Convo workspace" onPointerMove={moveDock} onPointerLeave={resetDock}>{primaryNavItems.map((item) => <button key={item.view} className={`dock-item ${activeView === item.view ? "is-active" : ""} ${item.badge && (item.view === "messages" || item.view === "notifications") ? "has-unread" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={navLabel(item.view)}><span className="dock-icon-wrap">{item.icon}{item.badge && <i>{item.badge}</i>}</span><span className="dock-tooltip" role="tooltip">{navLabel(item.view)}</span></button>)}<span className="dock-divider" aria-hidden="true" /><div className="dock-more-wrap"><button className={`dock-item ${showMoreMenu ? "is-active" : ""}`} onClick={() => setShowMoreMenu((open) => !open)} aria-label="More" aria-expanded={showMoreMenu} aria-haspopup="menu"><MoreHorizontal size={17} /><span className="dock-tooltip" role="tooltip">More</span></button>{showMoreMenu && <div className="dock-menu" role="menu"><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("events"); }}><span>Events</span><small>Group events, polls, tasks, and announcements</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("settings"); }}><span>Settings</span><small>Personalize your space</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); setShowLogoutConfirm(true); }}><span>Log out</span><small>Close this session safely</small></button></div>}</div><span className="dock-status"><span className="pulse-dot" /><small>MTU verified</small></span></nav><div className="dashboard-atmosphere"><ConvoOrbit /></div><div className="dashboard-content">{activeView === "home" && renderHome()}{activeView === "discover" && renderDiscover()}{activeView === "messages" && currentUserId && <StatusStories currentUserId={currentUserId} displayName={displayName} avatarUrl={avatarUrl} />}{activeView === "messages" && renderMessages()}{activeView === "notifications" && renderNotifications()}{activeView === "profile" && renderProfile()}{activeView === "groups" && renderGroups()}{activeView === "campus" && renderCampus()}{activeView === "events" && renderEvents()}{activeView === "files" && renderFiles()}{activeView === "assistant" && renderAssistant()}{activeView === "vault" && renderVault()}{activeView === "settings" && renderSettings()}{activeView === "id" && renderDigitalId()}</div></div>
     {showLogoutConfirm && <div className="logout-backdrop" role="presentation" onClick={() => setShowLogoutConfirm(false)}><div className="logout-dialog" role="dialog" aria-modal="true" aria-labelledby="logout-title" onClick={(event) => event.stopPropagation()}><span className="logout-orbit"><Check size={18} /></span><span className="eyebrow dark">SECURE EXIT</span><h2 id="logout-title">Leave Convo<br /><em>for now?</em></h2><p>Your session will close safely on this device.</p><div className="logout-dialog-actions"><button className="outline-button" onClick={() => setShowLogoutConfirm(false)}>Stay in Convo</button><button className="primary-button" onClick={() => { if (onLogout) void onLogout(); else setShowLogoutConfirm(false); }}>Log out safely <ArrowRight size={15} /></button></div></div></div>}
   </main></StudentIdCardVisibilityContext.Provider>;
 }

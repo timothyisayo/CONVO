@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { getCampusPanelState, joinCampusGroup } from "./campus-data";
-import { CONVO_ONBOARDING_SEQUENCE, saveMtuProfile, createMtuGroupConversation, createMtuGroupInvite, createMtuGroupPoll, createMtuGroupTask, deleteMtuMessage, editMtuMessage, getMtuConversationNotificationPreference, getMtuPrivacySettings, getMtuGroupPermissions, getProfileMetadata, joinMtuGroupInvite, listMtuGroupPolls, listMtuGroupTasks, listMtuSavedMessages, markMtuConversationRead, rotateMtuGroupInvite, searchMtuConversationMessages, sendMtuMessage, setMtuConversationNotificationPreference, setMtuConversationRailState, setMtuPrivacySettings, setMtuGroupPermissions, setMtuGroupTaskCompleted, createMtuGroupEvent, listMtuGroupEvents, setMtuGroupEventResponse, createMtuGroupNote, updateMtuGroupNote, listMtuGroupNotes, createMtuGroupAnnouncement, listMtuGroupAnnouncements, getMtuConversationAppearance, setMtuConversationAppearance, startMtuDirectConversation, subscribeToMtuAllMessages, subscribeToMtuConversation, subscribeToMtuMessages, syncMyMtuDirectoryProfile, uploadAvatar, uploadMessageImage, validateAvatarFile, validateMessageAttachment, validateMessageImage, castMtuGroupPollVote, revokeMtuGroupInvite } from "./supabase";
+import { CONVO_ONBOARDING_SEQUENCE, saveMtuProfile, createMtuGroupConversation, createMtuGroupInvite, createMtuGroupPoll, createMtuGroupTask, deleteMtuMessage, editMtuMessage, getMtuConversationNotificationPreference, getMtuPrivacySettings, getMtuGroupPermissions, getProfileMetadata, joinMtuGroupInvite, listMtuGroupPolls, listMtuGroupTasks, listMtuSavedMessages, markMtuConversationRead, rotateMtuGroupInvite, searchMtuConversationMessages, sendMtuMessage, setMtuConversationNotificationPreference, setMtuConversationRailState, setMtuPrivacySettings, setMtuGroupPermissions, setMtuGroupTaskCompleted, createMtuGroupEvent, listMtuGroupEvents, setMtuGroupEventResponse, createMtuGroupNote, updateMtuGroupNote, listMtuGroupNotes, createMtuGroupAnnouncement, listMtuGroupAnnouncements, getMtuConversationAppearance, setMtuConversationAppearance, removeConversationAppearanceImage, startMtuDirectConversation, subscribeToMtuAllMessages, subscribeToMtuConversation, subscribeToMtuMessages, syncMyMtuDirectoryProfile, uploadAvatar, uploadMessageImage, validateAvatarFile, validateMessageAttachment, validateMessageImage, castMtuGroupPollVote, revokeMtuGroupInvite, clearMtuNotifications, listMtuNotifications, uploadConversationAppearanceImage, validateConversationAppearanceImage } from "./supabase";
 import { isMtuEmail } from "./supabase";
 import { listMtuBlockedStudents, unblockMtuStudent } from "./supabase";
 import { listMtuApprovedPeople, normalizeProfileVisibility, setMtuApprovedPerson } from "./supabase";
+import { listMtuStatuses, recordMtuStatusView, subscribeToMtuStatuses, validateMtuStatusMedia } from "./supabase";
 
 describe("Supabase auth persistence", () => {
   it("persists the session without storing a password", async () => {
@@ -27,9 +28,94 @@ describe("isMtuEmail", () => {
   });
 });
 
+describe("notification cleanup", () => {
+  it("loads only unseen notifications so opened items do not return", async () => {
+    const calls: unknown[] = [];
+    const rows = [{ id: "n-1", read_at: null }];
+    const client = {
+      from: (table: string) => ({
+        select: (columns: string) => {
+          calls.push([table, "select", columns]);
+          return {
+            is: (column: string, value: unknown) => {
+              calls.push([table, column, value]);
+              return {
+                order: (orderColumn: string, options: unknown) => {
+                  calls.push([table, "order", orderColumn, options]);
+                  return { limit: async (limit: number) => { calls.push([table, "limit", limit]); return { data: rows, error: null }; } };
+                },
+              };
+            },
+          };
+        },
+      }),
+    } as never;
+    await expect(listMtuNotifications(client, 50)).resolves.toEqual({ data: rows, error: null });
+    expect(calls).toContainEqual(["mtu_notifications", "read_at", null]);
+  });
+
+  it("clears all notifications, not only the read ones", async () => {
+    const calls: unknown[] = [];
+    const client = {
+      from: (table: string) => ({
+        delete: () => {
+          calls.push([table, "delete"]);
+          return {
+            not: (column: string, operator: string, value: unknown) => {
+              calls.push([table, column, operator, value]);
+              return { data: [], error: null };
+            },
+          };
+        },
+      }),
+    } as never;
+
+    await expect(clearMtuNotifications(client)).resolves.toEqual({ data: [], error: null });
+    expect(calls).toEqual([
+      ["mtu_notifications", "delete"],
+      ["mtu_notifications", "id", "is", null],
+    ]);
+  });
+});
+
+describe("MTU Status persistence helpers", () => {
+  it("validates supported media types and the exported media size limit", () => {
+    expect(validateMtuStatusMedia(new File(["img"], "story.webp", { type: "image/webp" }), "image").valid).toBe(true);
+    expect(validateMtuStatusMedia(new File(["video"], "story.webm", { type: "video/webm" }), "video").valid).toBe(true);
+    expect(validateMtuStatusMedia(new File(["bad"], "story.gif", { type: "image/gif" }), "image").valid).toBe(false);
+    expect(validateMtuStatusMedia({ type: "video/mp4", size: 26 * 1024 * 1024 }, "video").error).toMatch(/25 MB/);
+  });
+
+  it("loads active text statuses without needing media signing", async () => {
+    const status = { status_id: "status-1", user_id: "student-1", status_type: "text", text_content: "Study group", media_path: null, metadata: {}, created_at: "2026-08-25T10:00:00.000Z", expires_at: "2026-08-26T10:00:00.000Z", display_name: "Ada", avatar_url: null, view_count: 1, viewed_by_me: false, viewers: [] };
+    const client = { rpc: async () => ({ data: [status], error: null }), storage: { from: () => { throw new Error("Text statuses do not require Storage."); } } } as never;
+    await expect(listMtuStatuses(client)).resolves.toMatchObject({ data: [{ ...status, media_url: null }], error: null });
+  });
+
+  it("records a deduplicated viewer row and cleans up both realtime table subscriptions", async () => {
+    const calls: unknown[] = [];
+    const channel = {
+      on: (...args: unknown[]) => { calls.push(args.slice(0, 2)); return channel; },
+      subscribe: () => { calls.push(["subscribe"]); return channel; },
+    };
+    const removed: unknown[] = [];
+    const client = {
+      from: (table: string) => ({ upsert: async (values: unknown, options: unknown) => { calls.push([table, values, options]); return { error: null }; } }),
+      channel: () => channel,
+      removeChannel: (value: unknown) => { removed.push(value); },
+    } as never;
+    await expect(recordMtuStatusView(client, "status-1", "student-2")).resolves.toEqual({ error: null });
+    const unsubscribe = subscribeToMtuStatuses(client);
+    unsubscribe();
+    expect(calls.some((call) => Array.isArray(call) && call[0] === "status_views")).toBe(true);
+    expect(calls.filter((call) => Array.isArray(call) && call[0] === "postgres_changes")).toHaveLength(2);
+    expect(removed).toEqual([channel]);
+  });
+});
+
 describe("avatar and profile helpers", () => {
   it("defaults incognito off and uses exact student ID approval RPCs", async () => {
-    expect(normalizeProfileVisibility({ programme: false })).toEqual({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false });
+    expect(normalizeProfileVisibility({ programme: false })).toEqual({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true });
     const calls: unknown[] = [];
     const client = { rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: [], error: null }; } } as never;
     await listMtuApprovedPeople(client);
@@ -105,9 +191,9 @@ describe("avatar and profile helpers", () => {
   });
 
   it("hydrates profile fields from Supabase user metadata", () => {
-    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: { display_name: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatar_url: "https://cdn/avatar.png", level: "300L", department: "CBAS", student_id: "MTU-26-7K4Q2", bio: "Study, build, connect.", profile_visibility: { programme: false, college: true, level: false, bio: true } } })).toEqual({ displayName: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatarUrl: "https://cdn/avatar.png", studentId: "MTU-26-7K4Q2", level: "300L", department: "CBAS", programme: "Computer Science", bio: "Study, build, connect.", visibility: { programme: false, college: true, level: false, bio: true, incognito: false, allow_exact_id_lookup: false } });
-    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: {} })).toMatchObject({ displayName: "", studentId: "", level: "", department: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false } });
-    expect(getProfileMetadata(null)).toEqual({ displayName: "", nickname: "", college: "", major: "", avatarUrl: "", studentId: "", level: "", department: "", programme: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false } });
+    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: { display_name: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatar_url: "https://cdn/avatar.png", level: "300L", department: "CBAS", student_id: "MTU-26-7K4Q2", bio: "Study, build, connect.", profile_visibility: { programme: false, college: true, level: false, bio: true } } })).toEqual({ displayName: "Ada", nickname: "Ada", college: "College of Basic and Applied Sciences", major: "Computer Science", avatarUrl: "https://cdn/avatar.png", studentId: "MTU-26-7K4Q2", level: "300L", department: "CBAS", programme: "Computer Science", bio: "Study, build, connect.", visibility: { programme: false, college: true, level: false, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true } });
+    expect(getProfileMetadata({ id: "12345678-aaaa-bbbb-cccc-ddddeeeeffff", email: "ada@mtu.edu.ng", user_metadata: {} })).toMatchObject({ displayName: "", studentId: "", level: "", department: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true } });
+    expect(getProfileMetadata(null)).toEqual({ displayName: "", nickname: "", college: "", major: "", avatarUrl: "", studentId: "", level: "", department: "", programme: "", bio: "", visibility: { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true } });
   });
 });
 
@@ -208,11 +294,53 @@ describe("live messaging helpers", () => {
 
   it("uses the conversation appearance RPCs with the secure contract", async () => {
     const calls: unknown[] = [];
-    const appearance = { chat_theme: "sage" as const, wallpaper_variant: "organic" as const };
-    const client = { rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: appearance, error: null }; } } as never;
-    await expect(getMtuConversationAppearance(client, "conversation-1")).resolves.toEqual({ data: appearance, error: null });
-    await expect(setMtuConversationAppearance(client, "conversation-1", appearance)).resolves.toEqual({ data: appearance, error: null });
-    expect(calls).toEqual([["get_mtu_conversation_appearance", { p_conversation_id: "conversation-1" }], ["set_mtu_conversation_appearance", { p_conversation_id: "conversation-1", p_chat_theme: "sage", p_wallpaper_variant: "organic" }]]);
+    const appearance = { background_image_path: "conversation-1/student-1/bg.jpg" };
+    const client = {
+      rpc: async (name: string, args?: unknown) => { calls.push([name, args]); return { data: [appearance], error: null }; },
+      storage: { from: (bucket: string) => ({ getPublicUrl: (path: string) => ({ data: { publicUrl: `https://cdn.test/${bucket}/${path}` } }) }) },
+    } as never;
+    const normalizedAppearance = { ...appearance, background_image_url: "https://cdn.test/conversation-backgrounds/conversation-1/student-1/bg.jpg" };
+    await expect(getMtuConversationAppearance(client, "conversation-1")).resolves.toEqual({ data: normalizedAppearance, error: null });
+    await expect(setMtuConversationAppearance(client, "conversation-1", normalizedAppearance)).resolves.toEqual({ data: normalizedAppearance, error: null });
+    expect(calls).toEqual([
+      ["get_mtu_conversation_appearance", { p_conversation_id: "conversation-1" }],
+      ["set_mtu_conversation_appearance", { p_conversation_id: "conversation-1", p_background_image_path: "conversation-1/student-1/bg.jpg" }],
+    ]);
+  });
+
+  it("uploads chat backgrounds into the conversation-shared image bucket", async () => {
+    const calls: unknown[] = [];
+    const client = {
+      storage: {
+        from: (bucket: string) => ({
+          upload: async (path: string) => { calls.push([bucket, path]); return { error: null }; },
+          getPublicUrl: (path: string) => ({ data: { publicUrl: `https://cdn.test/${bucket}/${path}` } }),
+        }),
+      },
+    } as never;
+    const uploaded = await uploadConversationAppearanceImage(
+      client,
+      new File(["image"], "background.png", { type: "image/png" }),
+      "student-1",
+      "conversation-1",
+    );
+    expect(uploaded.url).toContain("conversation-backgrounds/conversation-1/student-1/");
+    expect(calls[0]).toMatchObject(["conversation-backgrounds", expect.stringMatching(/^conversation-1\/student-1\//)]);
+    expect(validateConversationAppearanceImage(new File(["image"], "background.gif", { type: "image/gif" })).valid).toBe(false);
+  });
+
+  it("removes replaced chat backgrounds through Storage and only for their uploader", async () => {
+    const calls: unknown[] = [];
+    const client = {
+      storage: {
+        from: (bucket: string) => ({
+          remove: async (paths: string[]) => { calls.push([bucket, paths]); return { error: null }; },
+        }),
+      },
+    } as never;
+    await expect(removeConversationAppearanceImage(client, "conversation-1/student-1/old.jpg", "student-1")).resolves.toEqual({ error: null });
+    await expect(removeConversationAppearanceImage(client, "conversation-1/student-2/other.jpg", "student-1")).resolves.toEqual({ error: "You can only remove your own conversation background." });
+    expect(calls).toEqual([["conversation-backgrounds", ["conversation-1/student-1/old.jpg"]]]);
   });
 
   it("persists group artwork through the owner-admin scoped RPC contract", async () => {

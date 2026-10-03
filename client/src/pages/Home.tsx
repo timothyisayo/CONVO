@@ -107,6 +107,7 @@ import {
   subscribeToMtuNotifications,
   subscribeToMtuPublicProfiles,
   subscribeToMtuConversation,
+  subscribeToMtuConversationAppearance,
   subscribeToMtuMessages,
   subscribeToMtuGroupActivity,
   supabase,
@@ -245,6 +246,7 @@ export default function Home() {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetSuccess, setResetSuccess] = useState(false);
@@ -1165,7 +1167,11 @@ export default function Home() {
   const updateConversationAppearance = async (conversationId: string, appearance: MtuConversationAppearance) => {
     if (!supabase) return { data: null, error: "Sign in to personalize this conversation." };
     const result = await setMtuConversationAppearance(supabase, conversationId, appearance);
-    return result.error ? { data: null, error: result.error.message } : { data: result.data, error: null };
+    return result.error ? { data: null, error: result.error } : { data: result.data, error: null };
+  };
+  const subscribeToConversationAppearance = (conversationId: string, onChange: () => void) => {
+    if (!supabase) return () => undefined;
+    return subscribeToMtuConversationAppearance(supabase, conversationId, onChange);
   };
   const loadSavedMessages = async () => {
     if (!supabase) return { data: [], error: "Sign in to view saved messages." };
@@ -1562,6 +1568,7 @@ export default function Home() {
           onSetConversationNotificationPreference={supabase ? updateConversationNotificationPreference : undefined}
           onLoadConversationAppearance={supabase ? loadConversationAppearance : undefined}
           onSetConversationAppearance={supabase ? updateConversationAppearance : undefined}
+          onSubscribeToConversationAppearance={supabase ? subscribeToConversationAppearance : undefined}
           onLoadSavedMessages={supabase ? loadSavedMessages : undefined}
           onSearchConversationMessages={supabase ? searchConversationMessages : undefined}
           onCreateGroupPoll={supabase ? createGroupPoll : undefined}
@@ -1939,13 +1946,23 @@ export default function Home() {
                   value={email}
                   onChange={event => setEmail(event.target.value)}
                 />
-                <input
-                  className="auth-input"
-                  type="password"
-                  placeholder="Password"
-                  value={password}
-                  onChange={event => setPassword(event.target.value)}
-                />
+                <div className="password-field">
+                  <input
+                    className="auth-input"
+                    type={showLoginPassword ? "text" : "password"}
+                    placeholder="Password"
+                    value={password}
+                    onChange={event => setPassword(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    aria-label={showLoginPassword ? "Hide password" : "Show password"}
+                    onClick={() => setShowLoginPassword(visible => !visible)}
+                  >
+                    {showLoginPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
                 <label className="remember-me">
                   <input
                     type="checkbox"

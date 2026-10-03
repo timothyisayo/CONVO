@@ -5,6 +5,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { toastMock } = vi.hoisted(() => ({ toastMock: Object.assign(vi.fn(), { success: vi.fn() }) }));
 vi.mock("sonner", () => ({ toast: toastMock }));
+vi.mock("@/hooks/useMtuStatuses", () => ({
+  useMtuStatuses: () => ({
+    statuses: [],
+    loading: false,
+    error: "",
+    refresh: vi.fn(),
+    publish: vi.fn(),
+    remove: vi.fn(),
+    markViewed: vi.fn(),
+  }),
+}));
 import { ConvoDashboard, groupInviteUrl } from "./ConvoDashboard";
 import { StudentIdCard } from "./StudentIdCard";
 
@@ -76,6 +87,88 @@ describe("ConvoDashboard", () => {
     onConnectionRequestUpdate?.();
     await waitFor(() => expect(onLoadConnectionRequests).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole("button", { name: /Notifications/ }).length).toBeGreaterThan(0);
+  });
+
+  it("dismisses activity items when opened and clears the full activity list", async () => {
+    const onLoadNotifications = vi.fn(async () => ({
+      data: [
+        { id: "n-1", recipient_id: "student-1", notification_type: "message" as const, title: "Reply from Sam", body: "Sam replied to your message.", conversation_id: null, entity_id: null, payload: {}, created_at: "2025-02-01T09:00:00.000Z", read_at: null },
+        { id: "n-2", recipient_id: "student-1", notification_type: "group" as const, title: "Group update", body: "Your group posted a new announcement.", conversation_id: null, entity_id: null, payload: {}, created_at: "2025-02-01T08:45:00.000Z", read_at: null },
+      ],
+      error: null,
+    }));
+    const onMarkNotificationRead = vi.fn(async () => ({ error: null }));
+    const onClearNotifications = vi.fn(async () => ({ error: null }));
+
+    render(
+      <ConvoDashboard
+        currentUserId="student-1"
+        displayName="Ada"
+        major="Computer Science"
+        groups={[]}
+        posts={[]}
+        onLoadNotifications={onLoadNotifications}
+        onMarkNotificationRead={onMarkNotificationRead}
+        onClearNotifications={onClearNotifications}
+        onExit={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Notifications" })[0]);
+    expect(await screen.findByText("Reply from Sam")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Reply from Sam"));
+    await waitFor(() => expect(screen.queryByText("Reply from Sam")).toBeNull());
+    expect(onMarkNotificationRead).toHaveBeenCalledWith("n-1");
+
+    const clearButton = screen.getByRole("button", { name: /Clear activity/i });
+    expect((clearButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(clearButton);
+    await waitFor(() => expect(screen.queryByText("Group update")).toBeNull());
+    expect(await screen.findByText("You’re all caught up.")).toBeTruthy();
+    expect(onClearNotifications).toHaveBeenCalledTimes(1);
+  });
+
+  it("places the compact Status rail above the Messages workspace", async () => {
+    render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Messages/ })[0]!);
+    expect(await screen.findByRole("region", { name: "Status updates" })).toBeTruthy();
+    expect(document.querySelector(".dashboard-content")?.firstElementChild?.classList.contains("status-stories")).toBe(true);
+  });
+
+  it("keeps message search result buttons working inside the conversation search dialog", async () => {
+    const onLoadConversations = vi.fn(async () => ({ data: [{ id: "conversation-1", title: "Mariam", kind: "direct", counterpart_id: "student-2", counterpart_avatar_url: "https://cdn.test/mariam.jpg", last_message: "Hello", unread_count: 0 }], error: null }));
+    const onSearchConversationMessages = vi.fn(async () => ({ data: [{ id: "message-1", sender_id: "student-2", sender_display_name: "Mariam", body: "Deadline is Friday", created_at: "2025-02-01T09:00:00.000Z" }], error: null }));
+    render(
+      <ConvoDashboard
+        currentUserId="student-1"
+        displayName="Ada"
+        major="Computer Science"
+        groups={[]}
+        posts={[]}
+        onLoadConversations={onLoadConversations}
+        onLoadMessages={vi.fn(async () => ({ data: [], error: null }))}
+        onSearchConversationMessages={onSearchConversationMessages}
+        onExit={() => undefined}
+      />
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /^Messages/ })[0]!);
+    await waitFor(() => expect(onLoadConversations).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("button", { name: /Mariam/ }));
+    const profileTrigger = await waitFor(() => {
+      const node = document.querySelector<HTMLButtonElement>(".thread-profile-trigger");
+      expect(node).not.toBeNull();
+      return node!;
+    });
+    fireEvent.click(profileTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Search this chat" }));
+    const dialog = await screen.findByRole("form", { name: /Search this conversation/i });
+    fireEvent.change(within(dialog).getByLabelText(/Search phrase/i), { target: { value: "deadline" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Search" }));
+    const result = await screen.findByRole("button", { name: /Deadline is Friday/i });
+    fireEvent.click(result);
+    await waitFor(() => expect(document.querySelector(".convo-search-dialog")).toBeNull());
+    expect(onSearchConversationMessages).toHaveBeenCalledWith("conversation-1", "deadline");
   });
 
   it("renders direct profile images, active status, and an enlarged header viewer", async () => {
@@ -316,7 +409,12 @@ describe("live message callbacks", () => {
     fireEvent.click(screen.getByRole("button", { name: /Mariam A\./ }));
     await waitFor(() => expect(onLoadMessages).toHaveBeenCalledWith("conversation-1"));
     expect(screen.getByText("Bring your notes.")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Write a message" })).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".conversation-context-panel")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: "Expand chat" }));
+    await waitFor(() => expect(document.querySelector(".messages-view.is-thread-expanded")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Collapse chat" }));
+    await waitFor(() => expect(document.querySelector(".messages-view.is-thread-expanded")).toBeNull());
   });
 
   it("switches from a mobile thread back to the live conversation list", async () => {
@@ -335,7 +433,7 @@ describe("live message callbacks", () => {
     expect(document.querySelector(".messages-view.has-list")).toBeTruthy();
   });
 
-  it("moves direct-chat safety and private controls into the tapped student profile panel", async () => {
+  it("keeps direct-chat settings focused on conversation actions, not ID copying", async () => {
     const onLoadConversations = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1", title: "Mariam A.", kind: "direct", counterpart_id: "student-2", last_message: null }], error: null });
     const onLoadMessages = vi.fn().mockResolvedValue({ data: [], error: null });
     render(<ConvoDashboard currentUserId="student-1" displayName="Ada" studentId="MTU-ADA-001" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} onLoadConversations={onLoadConversations} onLoadMessages={onLoadMessages} onBlockStudent={vi.fn().mockResolvedValue({ ok: true })} onReportStudent={vi.fn().mockResolvedValue({ ok: true })} onSetConversationPreference={vi.fn().mockResolvedValue({ ok: true })} />);
@@ -345,7 +443,7 @@ describe("live message callbacks", () => {
     expect(screen.queryByRole("button", { name: "Report student" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open student profile" }));
     expect(await screen.findByRole("dialog", { name: "Student profile" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy public student ID" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy public student ID" })).toBeNull();
     expect(screen.getByRole("button", { name: "Search this chat" })).toBeTruthy();
     expect(document.querySelector("[data-conversation-notifications]")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Name this chat" })).toBeTruthy();
@@ -579,20 +677,19 @@ describe("dashboard refinement surfaces", () => {
     render(<ConvoDashboard displayName="Ada" legalName="Ada Lovelace" major="Computer Science" programme="Computer Science" studentId="MTU-SELF" department="CBAS" level="300 Level" groups={[]} posts={[]} onUpdatePrivacy={onUpdatePrivacy} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
     fireEvent.click(screen.getByRole("switch", { name: "Show Programme to students" }));
-    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false }));
+    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: false, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true }));
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
     expect(screen.queryAllByText("Computer Science").length).toBe(1);
     expect(screen.getByText("Only the details you chose are shown.")).toBeTruthy();
   });
 
-  it("uses a compact profile summary instead of an oversized cover while preserving public identity controls", async () => {
+  it("uses a compact profile summary and preserves the personal public-ID copy action", async () => {
     render(<ConvoDashboard displayName="Ada" legalName="Ada Lovelace" major="Computer Science" programme="Computer Science" studentId="MTU-SELF" department="CBAS" level="300 Level" groups={[]} posts={[]} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Profile" }));
     expect(document.querySelector(".profile-summary")).toBeTruthy();
     expect(document.querySelector(".profile-cover")).toBeNull();
     expect(screen.getByText("Your Convo profile")).toBeTruthy();
     expect(screen.getByText("Public student ID")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy student ID" })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Copy public student ID" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Update details/i })).toBeTruthy();
   });
@@ -624,6 +721,28 @@ describe("dashboard refinement surfaces", () => {
     expect(screen.getByRole("menuitem", { name: /View profile/ })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /Copy student ID/ })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /Connect/ })).toBeTruthy();
+  });
+
+  it("lets a student disable public student ID copying in Settings", async () => {
+    const onUpdatePrivacy = vi.fn(async () => ({ ok: true }));
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onUpdatePrivacy={onUpdatePrivacy} onExit={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    const idCopySwitch = screen.getByRole("switch", { name: "Allow others to copy my public student ID" });
+    expect(idCopySwitch.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(idCopySwitch);
+    await waitFor(() => expect(onUpdatePrivacy).toHaveBeenCalledWith({ programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: false }));
+    expect(idCopySwitch.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("does not offer or reveal a student's ID when directory privacy hides it", async () => {
+    const onSearchStudents = vi.fn().mockResolvedValue({ data: [{ id: "student-2", display_name: "Mariam A.", student_id: null, programme: "Computer Science", department: "CBAS", level: "300L", status_text: "Available" }], error: null });
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onSearchStudents={onSearchStudents} onExit={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(await screen.findByText("Mariam A.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More options for Mariam A." }));
+    expect(screen.queryByRole("menuitem", { name: /Copy student ID/ })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: /View profile/ }));
+    expect(screen.queryByText(/^MTU-/)).toBeNull();
   });
 
   it("uses the requestor nickname and opens chat after accepting a connection request", async () => {

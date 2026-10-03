@@ -27,7 +27,7 @@ alter table public.profiles add column if not exists student_id text;
 alter table public.profiles add column if not exists bio text;
 alter table public.profiles add column if not exists status_text text;
 alter table public.profiles add column if not exists profile_visibility jsonb not null default
-  '{"programme": true, "college": true, "level": true, "bio": true, "incognito": false, "allow_exact_id_lookup": false}'::jsonb;
+  '{"programme": true, "college": true, "level": true, "bio": true, "incognito": false, "allow_exact_id_lookup": false, "allow_public_id_copy": true}'::jsonb;
 
 update public.profiles
 set student_id = 'MTU-' || upper(substr(replace(id::text, '-', ''), 1, 8))
@@ -133,7 +133,9 @@ security definer
 stable
 set search_path = public
 as $$
-  select p.id, p.display_name, p.student_id, p.id = auth.uid() as is_self, p.level, p.department,
+  select p.id, p.display_name,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'allow_public_id_copy')::boolean, true) then p.student_id else null end,
+    p.id = auth.uid() as is_self, p.level, p.department,
     p.programme, p.avatar_url, p.bio, p.status_text
   from public.profiles p
   where public.is_mtu_account()
@@ -731,6 +733,7 @@ begin
   end if;
 end $$;
 
+
 -- ===== 2. CAMPUS DATA FOUNDATION =====
 -- Convo live campus-data repair
 -- Run this in Supabase SQL Editor to resolve 404s for campus_posts,
@@ -1020,7 +1023,7 @@ as $$
   select
     p.id,
     p.display_name,
-    p.student_id,
+    case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'allow_public_id_copy')::boolean, true) then p.student_id else null end,
     p.id = auth.uid() as is_self,
     case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'level')::boolean, true) then p.level else null end,
     case when p.id = auth.uid() or coalesce((p.profile_visibility ->> 'college')::boolean, true) then p.department else null end,
@@ -1076,7 +1079,8 @@ begin
     'level', coalesce((metadata -> 'profile_visibility' ->> 'level')::boolean, true),
     'bio', coalesce((metadata -> 'profile_visibility' ->> 'bio')::boolean, true),
     'incognito', coalesce((metadata -> 'profile_visibility' ->> 'incognito')::boolean, false),
-    'allow_exact_id_lookup', coalesce((metadata -> 'profile_visibility' ->> 'allow_exact_id_lookup')::boolean, false)
+    'allow_exact_id_lookup', coalesce((metadata -> 'profile_visibility' ->> 'allow_exact_id_lookup')::boolean, false),
+    'allow_public_id_copy', coalesce((metadata -> 'profile_visibility' ->> 'allow_public_id_copy')::boolean, true)
   );
   insert into public.profiles (id, display_name, student_id, level, department, programme, avatar_url, bio, profile_visibility)
   values (
@@ -3553,3 +3557,284 @@ begin
     alter publication supabase_realtime add table public.mtu_notifications;
   end if;
 end $$;
+
+-- Shared conversation-wide background images.
+create table if not exists public.conversation_appearance_settings (
+  conversation_id uuid primary key references public.conversations(id) on delete cascade,
+  background_image_path text,
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+alter table public.conversation_appearance_settings enable row level security;
+drop policy if exists "Conversation members can read shared appearance" on public.conversation_appearance_settings;
+create policy "Conversation members can read shared appearance"
+  on public.conversation_appearance_settings for select to authenticated
+  using (
+    public.is_mtu_account()
+    and exists (
+      select 1 from public.conversation_members member
+      where member.conversation_id = conversation_appearance_settings.conversation_id
+        and member.user_id = auth.uid()
+    )
+  );
+revoke all on public.conversation_appearance_settings from anon, authenticated;
+grant select on public.conversation_appearance_settings to authenticated;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('conversation-backgrounds', 'conversation-backgrounds', true, 5242880, array['image/png', 'image/jpeg', 'image/webp'])
+on conflict (id) do update
+set public = true, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+grant insert, delete on storage.objects to authenticated;
+
+drop policy if exists "Conversation members can upload chat backgrounds" on storage.objects;
+create policy "Conversation members can upload chat backgrounds"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'conversation-backgrounds'
+    and (storage.foldername(name))[2] = auth.uid()::text
+    and exists (
+      select 1 from public.conversation_members member
+      where member.conversation_id::text = (storage.foldername(name))[1]
+        and member.user_id = auth.uid()
+    )
+  );
+drop policy if exists "Users can delete their own chat backgrounds" on storage.objects;
+create policy "Users can delete their own chat backgrounds"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'conversation-backgrounds'
+    and (storage.foldername(name))[2] = auth.uid()::text
+  );
+
+drop function if exists public.get_mtu_conversation_appearance(uuid);
+drop function if exists public.set_mtu_conversation_appearance(uuid, text, text);
+drop function if exists public.set_mtu_conversation_appearance(uuid, text);
+create function public.get_mtu_conversation_appearance(p_conversation_id uuid)
+returns table (background_image_path text)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select setting.background_image_path
+  from (select 1) anchor
+  left join public.conversation_appearance_settings setting
+    on setting.conversation_id = p_conversation_id
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and exists (
+      select 1 from public.conversation_members member
+      where member.conversation_id = p_conversation_id
+        and member.user_id = auth.uid()
+    )
+$$;
+create function public.set_mtu_conversation_appearance(
+  p_conversation_id uuid,
+  p_background_image_path text
+)
+returns table (background_image_path text)
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth, storage
+as $$
+begin
+  if auth.uid() is null
+    or not public.is_mtu_account()
+    or not exists (
+      select 1 from public.conversation_members member
+      where member.conversation_id = p_conversation_id
+        and member.user_id = auth.uid()
+    )
+  then raise exception 'You cannot change this conversation background'; end if;
+
+  perform 1 from public.conversations conversation
+  where conversation.id = p_conversation_id
+  for update;
+
+  if p_background_image_path is not null then
+    if p_background_image_path not like p_conversation_id::text || '/' || auth.uid()::text || '/%'
+      or not exists (
+        select 1 from storage.objects object
+        where object.bucket_id = 'conversation-backgrounds'
+          and object.name = p_background_image_path
+      )
+    then raise exception 'Invalid conversation background image'; end if;
+  end if;
+
+  insert into public.conversation_appearance_settings (
+    conversation_id, background_image_path, updated_by, updated_at
+  )
+  values (p_conversation_id, p_background_image_path, auth.uid(), now())
+  on conflict (conversation_id) do update
+    set background_image_path = excluded.background_image_path,
+        updated_by = excluded.updated_by,
+        updated_at = excluded.updated_at;
+
+  return query select p_background_image_path;
+end;
+$$;
+revoke execute on function public.get_mtu_conversation_appearance(uuid),
+  public.set_mtu_conversation_appearance(uuid, text) from public, anon;
+grant execute on function public.get_mtu_conversation_appearance(uuid),
+  public.set_mtu_conversation_appearance(uuid, text) to authenticated;
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'conversation_appearance_settings'
+    )
+  then alter publication supabase_realtime add table public.conversation_appearance_settings; end if;
+end
+$$;
+
+-- ===== 16. MTU STATUS / STORIES =====
+create table if not exists public.status_posts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  status_type text not null check (status_type in ('text', 'image', 'video')),
+  text_content text not null default '',
+  media_path text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '24 hours'),
+  constraint status_media_matches_type check (
+    (status_type = 'text' and media_path is null)
+    or (status_type in ('image', 'video') and media_path is not null)
+  ),
+  constraint status_content_required check (
+    char_length(text_content) <= 700
+    and (status_type <> 'text' or char_length(trim(text_content)) between 1 and 700)
+  )
+);
+create index if not exists status_posts_active_created_idx on public.status_posts (expires_at, created_at desc);
+create index if not exists status_posts_owner_active_idx on public.status_posts (user_id, expires_at, created_at desc);
+
+create table if not exists public.status_views (
+  status_id uuid not null references public.status_posts(id) on delete cascade,
+  viewer_id uuid not null references auth.users(id) on delete cascade,
+  viewed_at timestamptz not null default now(),
+  primary key (status_id, viewer_id)
+);
+create index if not exists status_views_viewer_idx on public.status_views (viewer_id, viewed_at desc);
+
+create or replace function public.mtu_status_pair_allowed(p_owner_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select auth.uid() is not null
+    and public.is_mtu_account()
+    and (
+      p_owner_id = auth.uid()
+      or not exists (
+        select 1 from public.student_blocks block
+        where (block.blocker_id = auth.uid() and block.blocked_id = p_owner_id)
+           or (block.blocker_id = p_owner_id and block.blocked_id = auth.uid())
+      )
+    );
+$$;
+revoke execute on function public.mtu_status_pair_allowed(uuid) from public, anon;
+grant execute on function public.mtu_status_pair_allowed(uuid) to authenticated;
+
+alter table public.status_posts enable row level security;
+alter table public.status_views enable row level security;
+
+drop policy if exists "MTU students can view active unblocked statuses" on public.status_posts;
+create policy "MTU students can view active unblocked statuses" on public.status_posts for select to authenticated
+using (
+  public.mtu_status_pair_allowed(user_id)
+  and expires_at > now()
+);
+drop policy if exists "Students create their own statuses" on public.status_posts;
+create policy "Students create their own statuses" on public.status_posts for insert to authenticated
+with check (
+  public.is_mtu_account() and user_id = auth.uid()
+  and expires_at > now() and expires_at <= now() + interval '24 hours 1 minute'
+  and (media_path is null or media_path like auth.uid()::text || '/%')
+);
+drop policy if exists "Students delete their own statuses" on public.status_posts;
+create policy "Students delete their own statuses" on public.status_posts for delete to authenticated
+using (public.is_mtu_account() and user_id = auth.uid());
+
+drop policy if exists "Students read status views they own or made" on public.status_views;
+create policy "Students read status views they own or made" on public.status_views for select to authenticated
+using (
+  public.is_mtu_account()
+  and (viewer_id = auth.uid() or exists (
+    select 1 from public.status_posts post where post.id = status_id and post.user_id = auth.uid()
+  ))
+);
+drop policy if exists "Students record their own status views" on public.status_views;
+create policy "Students record their own status views" on public.status_views for insert to authenticated
+with check (
+  public.is_mtu_account() and viewer_id = auth.uid()
+  and exists (
+    select 1 from public.status_posts post
+    where post.id = status_id and post.expires_at > now() and post.user_id <> auth.uid()
+  )
+);
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('status-media', 'status-media', false, 26214400, array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'])
+on conflict (id) do update
+set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+drop policy if exists "Students upload their own status media" on storage.objects;
+create policy "Students upload their own status media" on storage.objects for insert to authenticated
+with check (bucket_id = 'status-media' and public.is_mtu_account() and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "Students read active status media" on storage.objects;
+create policy "Students read active status media" on storage.objects for select to authenticated
+using (
+  bucket_id = 'status-media' and public.is_mtu_account()
+  and exists (select 1 from public.status_posts post where post.media_path = storage.objects.name and post.expires_at > now())
+);
+drop policy if exists "Students delete their own status media" on storage.objects;
+create policy "Students delete their own status media" on storage.objects for delete to authenticated
+using (bucket_id = 'status-media' and public.is_mtu_account() and (storage.foldername(name))[1] = auth.uid()::text);
+
+create or replace function public.list_mtu_statuses()
+returns table (
+  status_id uuid, user_id uuid, status_type text, text_content text, media_path text, metadata jsonb,
+  created_at timestamptz, expires_at timestamptz, display_name text, avatar_url text,
+  view_count bigint, viewed_by_me boolean, viewers jsonb
+)
+language sql security definer stable set search_path = pg_catalog, public, auth
+as $$
+  select post.id, post.user_id, post.status_type, post.text_content, post.media_path, post.metadata,
+    post.created_at, post.expires_at, coalesce(profile.display_name, 'MTU student'), profile.avatar_url,
+    count(distinct view_row.viewer_id)::bigint, coalesce(bool_or(view_row.viewer_id = auth.uid()), false),
+    case when post.user_id = auth.uid() then coalesce(
+      jsonb_agg(jsonb_build_object('user_id', viewer.id, 'display_name', viewer.display_name,
+        'avatar_url', viewer.avatar_url, 'viewed_at', view_row.viewed_at) order by view_row.viewed_at desc)
+      filter (where view_row.viewer_id is not null), '[]'::jsonb
+    ) else '[]'::jsonb end
+  from public.status_posts post
+  left join public.profiles profile on profile.id = post.user_id
+  left join public.status_views view_row on view_row.status_id = post.id
+  left join public.profiles viewer on viewer.id = view_row.viewer_id
+  where public.is_mtu_account() and post.expires_at > now()
+    and public.mtu_status_pair_allowed(post.user_id)
+  group by post.id, profile.display_name, profile.avatar_url
+  order by post.created_at asc;
+$$;
+revoke execute on function public.list_mtu_statuses() from public, anon;
+grant execute on function public.list_mtu_statuses() to authenticated;
+grant select, insert, delete on public.status_posts to authenticated;
+grant select, insert on public.status_views to authenticated;
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'status_posts') then
+      alter publication supabase_realtime add table public.status_posts;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'status_views') then
+      alter publication supabase_realtime add table public.status_views;
+    end if;
+  end if;
+end
+$$;

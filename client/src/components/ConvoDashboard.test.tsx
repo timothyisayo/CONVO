@@ -931,3 +931,20 @@ describe("full-scope collaboration surfaces", () => {
     expect(screen.getByText("notes.pdf").closest("a")?.getAttribute("download")).toBe("notes.pdf");
   });
 });
+
+describe("Timothy study chat history", () => {
+  it("restores the latest saved chat and switches to an older recent chat", async () => {
+    window.localStorage.setItem("convo-timothy-chats:student-1", JSON.stringify([
+      { id: "older-chat", title: "Older study chat", messages: [{ role: "user", content: "Review the first topic" }], updatedAt: 10 },
+      { id: "newer-chat", title: "Latest study chat", messages: [{ role: "user", content: "Review the latest topic" }], updatedAt: 20 },
+    ]));
+    render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Study assistant" }));
+    expect((await screen.findAllByText("Review the latest topic")).length).toBeGreaterThan(0);
+    const recentChats = await screen.findByRole("navigation", { name: "Timothy chats" });
+    fireEvent.click(within(recentChats).getByRole("button", { name: /Older study chat/ }));
+    expect((await screen.findAllByText("Review the first topic")).length).toBeGreaterThan(0);
+    expect(JSON.parse(window.localStorage.getItem("convo-timothy-chats:student-1") || "[]")).toHaveLength(2);
+  });
+});

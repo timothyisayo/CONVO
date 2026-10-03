@@ -63,6 +63,41 @@ describe("Messages idle conversation screen", () => {
     expect(screen.getByText("Choose a conversation from the left.")).toBeTruthy();
   });
 
+  it("clears the persisted draft after a successful send, even with an autosave pending", async () => {
+    const onSetConversationRailState = vi.fn().mockResolvedValue({ data: null, error: null });
+    const onLoadConversations = vi.fn().mockResolvedValue({
+      data: [{ id: "direct-1", title: "Mariam", kind: "direct", draft_body: "A saved draft", last_message: null }],
+      error: null,
+    });
+    const onSendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { id: "message-1", sender_id: "student-1", body: "A saved draft", created_at: new Date().toISOString() },
+    });
+    render(
+      <ConvoDashboard
+        currentUserId="student-1"
+        displayName="Ada"
+        major="Computer Science"
+        groups={[]}
+        posts={[]}
+        onExit={() => undefined}
+        onLoadConversations={onLoadConversations}
+        onLoadMessages={vi.fn().mockResolvedValue({ data: [], error: null })}
+        onSetConversationRailState={onSetConversationRailState}
+        onSendMessage={onSendMessage}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Mariam/ }));
+    expect((screen.getByLabelText("Write a message") as HTMLTextAreaElement).value).toBe("A saved draft");
+    fireEvent.submit(screen.getByLabelText("Write a message").closest("form")!);
+
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onSetConversationRailState).toHaveBeenLastCalledWith("direct-1", null, null, ""));
+    expect(screen.queryByText("Draft: A saved draft")).toBeNull();
+  });
+
   it("does not retain messages from the previously selected conversation while another conversation loads", async () => {
     const onLoadConversations = vi.fn().mockResolvedValue({ data: [{ id: "direct-1", title: "Mariam", kind: "direct", last_message: null }, { id: "group-1", title: "Study group", kind: "group", last_message: null }], error: null });
     const onLoadMessages = vi.fn().mockImplementation((conversationId: string) => Promise.resolve({ data: [{ id: `message-${conversationId}`, conversation_id: conversationId, sender_id: "student-2", body: conversationId === "direct-1" ? "Private hello" : "Group agenda", created_at: new Date().toISOString() }], error: null }));

@@ -219,12 +219,12 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const [assistantMessages, setAssistantMessages] = React.useState<AssistantMessage[]>([]);
   const [assistantChats, setAssistantChats] = React.useState<AssistantChat[]>([]);
   const [activeAssistantChatId, setActiveAssistantChatId] = React.useState("");
+  const [assistantHistoryOwner, setAssistantHistoryOwner] = React.useState("");
   const [assistantBusy, setAssistantBusy] = React.useState(false);
   const [assistantAttachments, setAssistantAttachments] = React.useState<Array<{ name: string; mimeType: string; data: string }>>([]);
   const [assistantSecondsLeft, setAssistantSecondsLeft] = React.useState(0);
   const assistantFileInputRef = React.useRef<HTMLInputElement>(null);
   const assistantTranscriptRef = React.useRef<HTMLDivElement>(null);
-  const assistantHistoryLoadedRef = React.useRef(false);
   const renderEventsPreview = () => {
     if (activeConversation?.kind !== "group") return <section className="workspace-view premium-feature-view"><div className="workspace-heading"><div><span className="eyebrow dark">Your circles</span><h1>Choose a group<br /><em>for Events.</em></h1><p>Only groups you belong to can appear here. Select a group to view its events, polls, tasks, and announcements.</p></div></div>{groupDirectoryLoading ? <div className="event-list event-list-loading" aria-busy="true"><div /><div /><div /></div> : groupDirectoryError ? <div className="premium-empty-state"><h2>Groups are unavailable.</h2><p>{groupDirectoryError}</p></div> : <div className="group-row-list">{liveGroupDirectory.filter((group) => group.is_member).map((group, index) => <article className={`group-row ${["rose", "sage", "butter", "apricot"][index % 4]}`} key={group.conversation_id}><span className="group-row-mark" aria-hidden="true">{group.group_image_url ? <img src={group.group_image_url} alt="" /> : <Users size={17} />}</span><div><span className="eyebrow dark">Your circle</span><h2>{group.title}</h2><p>{group.category ? group.category.replace("_", " & ") : "MTU group"}</p></div><small>{group.member_count} members</small><button type="button" className="primary-button" onClick={() => { setLiveConversations((current) => current.some((conversation) => conversation.id === group.conversation_id) ? current : [{ id: group.conversation_id, name: group.title, kind: "group", meta: group.category ? group.category.replace("_", " & ") : "MTU group", message: "Group activity", tone: "rose", unread: "", groupImageUrl: group.group_image_url }, ...current]); setSelectedConversationId(group.conversation_id); setActiveView("events"); }}>{`Open ${group.title}`} <ArrowRight size={14} /></button></article>)}{!liveGroupDirectory.some((group) => group.is_member) && <div className="premium-empty-state"><CalendarDays size={22} /><h2>No groups available.</h2><p>Join a group first, then its Events workspace will appear here.</p></div>}</div>}</section>;
     const reload = () => setGroupEventsVersion((version) => version + 1);
@@ -232,14 +232,15 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   };
   React.useEffect(() => {
     if (!currentUserId) return;
-    assistantHistoryLoadedRef.current = false;
+    setAssistantHistoryOwner("");
     try {
       const saved = window.localStorage.getItem(`convo-timothy-chats:${currentUserId}`);
       const parsed = saved ? JSON.parse(saved) as AssistantChat[] : [];
-      if (Array.isArray(parsed) && parsed.length) {
-        setAssistantChats(parsed);
-        setActiveAssistantChatId(parsed[0].id);
-        setAssistantMessages(parsed[0].messages || []);
+      if (Array.isArray(parsed) && parsed.length && parsed.every((chat) => chat && typeof chat.id === "string" && Array.isArray(chat.messages))) {
+        const ordered = [...parsed].sort((a, b) => b.updatedAt - a.updatedAt);
+        setAssistantChats(ordered);
+        setActiveAssistantChatId(ordered[0].id);
+        setAssistantMessages(ordered[0].messages);
       } else {
         const legacy = window.localStorage.getItem(`convo-timothy-history:${currentUserId}`);
         const messages = legacy ? JSON.parse(legacy) as AssistantMessage[] : [];
@@ -249,19 +250,22 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
         setAssistantMessages(initial.messages);
       }
     } catch {
+      const initial = { id: crypto.randomUUID(), title: "New chat", messages: [], updatedAt: Date.now() };
+      setAssistantChats([initial]);
+      setActiveAssistantChatId(initial.id);
       setAssistantMessages([]);
     } finally {
-      assistantHistoryLoadedRef.current = true;
+      setAssistantHistoryOwner(currentUserId);
     }
   }, [currentUserId]);
   React.useEffect(() => {
-    if (!currentUserId || !assistantHistoryLoadedRef.current) return;
+    if (!currentUserId || assistantHistoryOwner !== currentUserId) return;
     setAssistantChats((current) => current.map((chat) => chat.id === activeAssistantChatId ? { ...chat, messages: assistantMessages.slice(-100), updatedAt: Date.now(), title: chat.title === "New chat" && assistantMessages[0]?.content ? assistantMessages[0].content.slice(0, 34) : chat.title } : chat));
-  }, [assistantMessages, activeAssistantChatId, currentUserId]);
+  }, [assistantMessages, activeAssistantChatId, assistantHistoryOwner, currentUserId]);
   React.useEffect(() => {
-    if (!currentUserId || !assistantHistoryLoadedRef.current) return;
+    if (!currentUserId || assistantHistoryOwner !== currentUserId) return;
     window.localStorage.setItem(`convo-timothy-chats:${currentUserId}`, JSON.stringify(assistantChats));
-  }, [assistantChats, currentUserId]);
+  }, [assistantChats, assistantHistoryOwner, currentUserId]);
   React.useEffect(() => {
     const transcript = assistantTranscriptRef.current;
     if (!transcript) return;
@@ -301,11 +305,18 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     sidebar.appendChild(label);
     const list = document.createElement("nav");
     list.setAttribute("aria-label", "Timothy chats");
-    assistantChats.forEach((chat) => {
+    [...assistantChats].sort((a, b) => b.updatedAt - a.updatedAt).forEach((chat) => {
       const item = document.createElement("button");
       item.type = "button";
       item.className = `assistant-chat-item ${chat.id === activeAssistantChatId ? "is-active" : ""}`;
-      item.textContent = chat.title;
+      item.setAttribute("aria-current", chat.id === activeAssistantChatId ? "page" : "false");
+      const title = document.createElement("span");
+      title.className = "assistant-chat-title";
+      title.textContent = chat.title || "New chat";
+      const preview = document.createElement("small");
+      preview.className = "assistant-chat-preview";
+      preview.textContent = chat.messages.at(-1)?.content || "Start a conversation";
+      item.append(title, preview);
       item.addEventListener("click", () => selectAssistantChat(chat));
       list.appendChild(item);
     });
@@ -400,6 +411,8 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const [pollOptionCount, setPollOptionCount] = React.useState(2);
   const [groupEventsVersion, setGroupEventsVersion] = React.useState(0);
   const draftConversationRef = React.useRef("");
+  const draftSaveTimerRef = React.useRef<number | undefined>(undefined);
+  const draftWriteQueueRef = React.useRef<Promise<void>>(Promise.resolve());
   const [sendingMessage, setSendingMessage] = React.useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = React.useState(false);
   const [emojiPanelTab, setEmojiPanelTab] = React.useState<"emoji" | "stickers">("emoji");
@@ -468,6 +481,9 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
           : undefined,
         unread: !item.read_at,
       })));
+    }).catch((error: unknown) => {
+      if (!active) return;
+      toast.error("Notifications could not be loaded", { description: error instanceof Error ? error.message : "Please try again shortly." });
     });
     const unsubscribe = onSubscribeToNotifications?.((raw) => {
       const id = typeof raw.id === "string" ? raw.id : "";
@@ -1004,14 +1020,31 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     const savedDraft = liveConversations.find((conversation) => conversation.id === selectedConversationId)?.draftBody || "";
     setMessageDraft(savedDraft);
   }, [activeView, selectedConversationId]);
+  const persistConversationDraft = (conversationId: string, draft: string) => {
+    setLiveConversations((current) => current.map((conversation) => conversation.id === conversationId ? { ...conversation, draftBody: draft || null } : conversation));
+    if (!onSetConversationRailState) return Promise.resolve();
+    const write = draftWriteQueueRef.current.then(async () => {
+      const result = await onSetConversationRailState(conversationId, null, null, draft);
+      if (result.error) throw new Error(result.error);
+    });
+    const handledWrite = write.catch((error: unknown) => {
+      toast.error("Your message draft could not be saved", { description: error instanceof Error ? error.message : "Please try again." });
+    });
+    draftWriteQueueRef.current = handledWrite;
+    return handledWrite;
+  };
   React.useEffect(() => {
     if (activeView !== "messages" || !selectedConversationId || draftConversationRef.current !== selectedConversationId || !onSetConversationRailState) return;
     const draft = messageDraft.slice(0, 4000);
     const timeout = window.setTimeout(() => {
-      setLiveConversations((current) => current.map((conversation) => conversation.id === selectedConversationId ? { ...conversation, draftBody: draft || null } : conversation));
-      void onSetConversationRailState(selectedConversationId, null, null, draft || null);
+      draftSaveTimerRef.current = undefined;
+      void persistConversationDraft(selectedConversationId, draft);
     }, 420);
-    return () => window.clearTimeout(timeout);
+    draftSaveTimerRef.current = timeout;
+    return () => {
+      window.clearTimeout(timeout);
+      if (draftSaveTimerRef.current === timeout) draftSaveTimerRef.current = undefined;
+    };
   }, [activeView, messageDraft, onSetConversationRailState, selectedConversationId]);
   React.useEffect(() => {
     if (!onTouchLastSeen || !currentUserId) return;
@@ -1225,7 +1258,47 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     });
     return () => { active = false; };
   }, [activeView, onLoadMessageInteractions, selectedConversationId]);
-  const sendMessage = async (event: React.FormEvent) => { event.preventDefault(); const body = replaceEmojiAlias(messageDraft).trim(); if ((!body && !attachmentFile) || sendingMessage) return; if (messagesWorkspaceMode === "blocked-direct") { setMessageError("Unblock this student in Safety & privacy before sending a new message."); return; } if (body.length > 4000) { setMessageError("Messages must be 4,000 characters or fewer."); return; } if (!selectedConversationId || !onSendMessage) { setMessageError("Choose a live conversation before sending a message."); return; } setMessageError(""); setSendingMessage(true); try { const result = replyingTo ? await onSendMessage(selectedConversationId, body, attachmentFile, replyingTo.id) : attachmentFile ? await onSendMessage(selectedConversationId, body, attachmentFile) : await onSendMessage(selectedConversationId, body); if (!result.ok) { setMessageError(result.error || "We couldn’t send that message."); return; } if (result.data) { setThreadMessages((current) => current.some((item) => item.id === result.data?.id) ? current : [...current, { ...result.data, conversation_id: selectedConversationId } as { id: string; conversation_id: string; sender_id: string; body: string; created_at: string; reply_to_id?: string | null }]); if (result.data.attachment_url) addSharedFile({ message_id: result.data.id, sender_id: result.data.sender_id, attachment_url: result.data.attachment_url, attachment_path: result.data.attachment_path || null, attachment_mime: result.data.attachment_mime || null, body: result.data.body, created_at: result.data.created_at }); } await typingChannelRef.current?.sendTyping(currentUserId, false); setMessageDraft(""); setAttachmentFile(null); setReplyingTo(null); if (onSetConversationRailState) await onSetConversationRailState(selectedConversationId, null, null, ""); } finally { setSendingMessage(false); } };
+  const sendMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const body = replaceEmojiAlias(messageDraft).trim();
+    if ((!body && !attachmentFile) || sendingMessage) return;
+    if (messagesWorkspaceMode === "blocked-direct") { setMessageError("Unblock this student in Safety & privacy before sending a new message."); return; }
+    if (body.length > 4000) { setMessageError("Messages must be 4,000 characters or fewer."); return; }
+    if (!selectedConversationId || !onSendMessage) { setMessageError("Choose a live conversation before sending a message."); return; }
+    if (draftSaveTimerRef.current !== undefined) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = undefined;
+    }
+    setMessageError("");
+    setSendingMessage(true);
+    try {
+      const result = replyingTo
+        ? await onSendMessage(selectedConversationId, body, attachmentFile, replyingTo.id)
+        : attachmentFile
+          ? await onSendMessage(selectedConversationId, body, attachmentFile)
+          : await onSendMessage(selectedConversationId, body);
+      if (!result.ok) {
+        setMessageError(result.error || "We couldn’t send that message.");
+        await persistConversationDraft(selectedConversationId, messageDraft.slice(0, 4000));
+        return;
+      }
+      if (result.data) {
+        setThreadMessages((current) => current.some((item) => item.id === result.data?.id) ? current : [...current, { ...result.data, conversation_id: selectedConversationId } as { id: string; conversation_id: string; sender_id: string; body: string; created_at: string; reply_to_id?: string | null }]);
+        if (result.data.attachment_url) addSharedFile({ message_id: result.data.id, sender_id: result.data.sender_id, attachment_url: result.data.attachment_url, attachment_path: result.data.attachment_path || null, attachment_mime: result.data.attachment_mime || null, body: result.data.body, created_at: result.data.created_at });
+      }
+      await typingChannelRef.current?.sendTyping(currentUserId, false);
+      setMessageDraft("");
+      setAttachmentFile(null);
+      setReplyingTo(null);
+      await persistConversationDraft(selectedConversationId, "");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Please try sending your message again.";
+      setMessageError(message);
+      await persistConversationDraft(selectedConversationId, messageDraft.slice(0, 4000));
+    } finally {
+      setSendingMessage(false);
+    }
+  };
   const emojiAliases: Record<string, string> = { ":smile:": "😊", ":happy:": "😊", ":fire:": "🔥", ":heart:": "❤️", ":laugh:": "😂", ":thumbsup:": "👍", ":sad:": "😢", ":party:": "🎉", ":eyes:": "👀" };
   const replaceEmojiAlias = (value: string) => value.replace(/:[a-z_]+:/gi, (alias) => emojiAliases[alias.toLowerCase()] || alias);
   const insertEmoji = (emoji: string) => {
@@ -2176,24 +2249,32 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
         toast.error("This notification could not be dismissed", { description: "Notification storage is not connected." });
         return;
       }
-      const result = await onMarkNotificationRead(item.id);
-      if (result.error) {
-        toast.error("This notification could not be dismissed", { description: result.error });
-        return;
+      try {
+        const result = await onMarkNotificationRead(item.id);
+        if (result.error) {
+          toast.error("This notification could not be dismissed", { description: result.error });
+          return;
+        }
+        setActivityNotifications((current) => current.filter((entry) => entry.id !== item.id));
+      } catch (error) {
+        toast.error("This notification could not be dismissed", { description: error instanceof Error ? error.message : "Please try again shortly." });
       }
-      setActivityNotifications((current) => current.filter((entry) => entry.id !== item.id));
     };
     const clearActivity = async () => {
       if (!onClearNotifications) {
         toast.error("Notifications could not be cleared", { description: "Notification storage is not connected." });
         return;
       }
-      const result = await onClearNotifications();
-      if (result.error) {
-        toast.error("Notifications could not be cleared", { description: result.error });
-        return;
+      try {
+        const result = await onClearNotifications();
+        if (result.error) {
+          toast.error("Notifications could not be cleared", { description: result.error });
+          return;
+        }
+        setActivityNotifications([]);
+      } catch (error) {
+        toast.error("Notifications could not be cleared", { description: error instanceof Error ? error.message : "Please try again shortly." });
       }
-      setActivityNotifications([]);
     };
     return <section className="workspace-view notifications-view"><div className="workspace-heading"><div><span className="eyebrow dark">A little movement</span><h1>Your<br /><em>notifications.</em></h1><p>Messages, calls, connection requests, and group activity appear here.</p></div><div className="workspace-heading-actions"><button type="button" className="outline-button" onClick={() => void clearActivity()} disabled={activityNotifications.length === 0}>Clear activity</button></div></div><div className="notification-stack">{items.length ? items.map((item) => <article className={`notification-card ${item.unread ? "is-unread" : ""}`} key={item.id} onClick={() => void openNotification(item)}><span className="notification-mark rose">{item.kind === "connection" ? <Users size={16} /> : item.kind === "group" ? <Bell size={16} /> : <MessageCircle size={16} />}</span><span><b>{item.title}</b><small>{item.body}</small><small>{new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small></span>{item.kind === "connection" ? <button type="button" className="primary-button" onClick={(event) => { event.stopPropagation(); void openNotification(item); const request = pendingRequests.find((candidate) => candidate.id === item.connectionRequestId); if (request) void acceptRequest(request); }}>Accept</button> : <ArrowRight size={16} aria-hidden="true" />}</article>) : <div className="directory-empty"><Bell size={22} /><strong>You’re all caught up.</strong><span>Messages, calls, requests, and group updates will appear here.</span></div>}</div></section>;
   };

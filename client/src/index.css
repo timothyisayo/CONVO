@@ -1595,3 +1595,71 @@ h1 em, h2 em, h3 em { color: var(--apricot); font-style: normal; }
     font-size: 10px !important;
   }
 }
+
+#root .assistant-view .assistant-composer-footer,
+#root .assistant-view .assistant-actions {
+  align-items: center !important;
+}
+
+#root .assistant-view .assistant-actions button {
+  align-self: center !important;
+  margin: 0 !important;
+}
+
+@media (max-width: 560px) {
+  #root .convo-top-dock {
+    width: calc(100% - 16px) !important;
+    max-width: calc(100% - 16px) !important;
+    justify-content: flex-start !important;
+    gap: 2px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #root .convo-top-dock::-webkit-scrollbar {
+    display: none;
+  }
+
+  #root .convo-top-dock .dock-item {
+    flex: 0 0 38px !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    padding: 0 !important;
+  }
+
+  #root .convo-top-dock .dock-item .dock-icon-wrap {
+    display: grid !important;
+    visibility: visible !important;
+  }
+
+  #root .convo-top-dock .dock-item > .dock-tooltip {
+    display: none !important;
+  }
+
+  #root .convo-top-dock .dock-more-wrap {
+    flex: 0 0 38px;
+  }
+
+  #root .convo-top-dock .dock-divider {
+    flex: 0 0 1px;
+  }
+
+  #root .assistant-view .assistant-composer-footer {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  #root .assistant-view .assistant-actions {
+    width: 100% !important;
+  }
+
+  #root .assistant-view .assistant-actions button {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    padding-inline: 7px !important;
+    gap: 5px !important;
+    font-size: clamp(9px, 2.8vw, 11px) !important;
+  }
+}

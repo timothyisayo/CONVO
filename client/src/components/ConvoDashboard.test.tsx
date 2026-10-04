@@ -54,7 +54,7 @@ describe("ConvoDashboard", () => {
     expect(screen.queryByText("4")).toBeNull();
   });
 
-  it("increments the navigation badge for a new incoming message", async () => {
+  it("keeps unread messages out of the notification badge", async () => {
     let onIncomingMessage: ((message: Record<string, unknown>) => void) | undefined;
     const onLoadConversations = vi.fn(async () => ({ data: [{ id: "conversation-1", title: "Live chat", kind: "direct", last_message: "Hello", unread_count: 0 }], error: null }));
     render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" groups={[]} posts={[]} onLoadConversations={onLoadConversations} onSubscribeToAllMessages={(callback) => { onIncomingMessage = callback; return () => undefined; }} onExit={() => undefined} />);
@@ -62,7 +62,8 @@ describe("ConvoDashboard", () => {
     onIncomingMessage?.({ id: "message-2", conversation_id: "conversation-1", sender_id: "student-2", body: "Are you around?" });
     const dock = screen.getByRole("navigation", { name: "Convo workspace" });
     expect(await within(dock).findByText("1")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Notifications, 1 unread message/ })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Notifications" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Notifications, 1 unread/ })).toBeNull();
   });
 
   it("refreshes the notifications badge when a new connection request arrives live", async () => {
@@ -116,16 +117,19 @@ describe("ConvoDashboard", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "Notifications" })[0]);
     expect(await screen.findByText("Reply from Sam")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Notifications, 2 unread" })).toBeTruthy();
 
     fireEvent.click(screen.getByText("Reply from Sam"));
     await waitFor(() => expect(screen.queryByText("Reply from Sam")).toBeNull());
     expect(onMarkNotificationRead).toHaveBeenCalledWith("n-1");
+    expect(screen.getByRole("button", { name: "Notifications, 1 unread" })).toBeTruthy();
 
     const clearButton = screen.getByRole("button", { name: /Clear activity/i });
     expect((clearButton as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(clearButton);
     await waitFor(() => expect(screen.queryByText("Group update")).toBeNull());
     expect(await screen.findByText("You’re all caught up.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Notifications" }).length).toBeGreaterThan(0);
     expect(onClearNotifications).toHaveBeenCalledTimes(1);
   });
 
@@ -649,12 +653,15 @@ describe("animated dock refinements", () => {
     expect(screen.getByRole("dialog", { name: /Leave Convo/i })).toBeTruthy();
   });
 
-  it("adds attention pulses only to live unread Messages and Notifications", async () => {
+  it("shows notification badges only for unread notification activity", async () => {
     const onLoadConversations = vi.fn(async () => ({ data: [{ id: "conversation-1", title: "Live chat", kind: "direct", last_message: "Hello", unread_count: 2 }], error: null }));
     const onLoadConnectionRequests = vi.fn(async () => ({ data: [{ id: "request-1", requester_id: "student-2", recipient_id: "student-1", status: "pending", direction: "received" }], error: null }));
-    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onLoadConversations={onLoadConversations} onLoadConnectionRequests={onLoadConnectionRequests} onExit={() => undefined} />);
+    const onLoadNotifications = vi.fn(async () => ({ data: [], error: null }));
+    render(<ConvoDashboard currentUserId="student-1" displayName="Ada" major="Computer Science" groups={[]} posts={[]} onLoadConversations={onLoadConversations} onLoadConnectionRequests={onLoadConnectionRequests} onLoadNotifications={onLoadNotifications} onExit={() => undefined} />);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Messages" })[0].className).toContain("has-unread"));
-    expect(screen.getAllByRole("button", { name: "Notifications" }).at(-1)?.className).toContain("has-unread");
+    await waitFor(() => expect(onLoadNotifications).toHaveBeenCalled());
+    expect(screen.getAllByRole("button", { name: "Notifications" }).at(-1)?.className).not.toContain("has-unread");
+    expect(screen.queryByRole("button", { name: /Notifications, \d+ unread/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Home" }).className).not.toContain("has-unread");
   });
 });

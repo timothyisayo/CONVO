@@ -7,6 +7,32 @@
   background: color-mix(in srgb, var(--card) 91%, transparent);
   box-shadow: 0 5px 18px rgba(60, 45, 36, 0.045);
 }
+.status-stories-public { border-color: color-mix(in srgb, var(--primary) 25%, var(--border)); }
+.status-rail-heading { margin: 0 0 5px; color: var(--muted-foreground); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.status-audience-choice {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--card) 84%, var(--secondary));
+}
+.status-audience-choice legend { padding: 0 4px; color: var(--muted-foreground); font-size: 10px; font-weight: 700; }
+.status-audience-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 7px;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.status-audience-choice label:has(input:checked) { background: color-mix(in srgb, var(--primary) 8%, var(--card)); }
+.status-audience-choice input { flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--primary); }
+.status-audience-choice label span { display: grid; gap: 2px; }
+.status-audience-choice strong { font-size: 10px; line-height: 1.35; }
+.status-audience-choice small { color: var(--muted-foreground); font-size: 9px; line-height: 1.4; }
 #root .dashboard-content:has(> .status-stories) {
   display: flex !important;
   min-height: 0;

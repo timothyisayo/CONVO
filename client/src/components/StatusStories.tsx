@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { STATUS_MEDIA_MAX_BYTES, type MtuStatus, type MtuStatusDraft } from "@/lib/supabase";
+import { STATUS_MEDIA_MAX_BYTES, type MtuStatus, type MtuStatusAudience, type MtuStatusDraft } from "@/lib/supabase";
 import { useMtuStatuses } from "@/hooks/useMtuStatuses";
 import "./status-stories.css";
 
@@ -69,7 +69,7 @@ type EditorState = {
   brushColor: string;
   brushSize: number;
 };
-type StatusStoriesProps = { currentUserId: string; displayName: string; avatarUrl?: string };
+type StatusStoriesProps = { currentUserId: string; displayName: string; avatarUrl?: string; audience?: MtuStatusAudience };
 
 const emptyEditor = (): EditorState => ({
   media: null,
@@ -93,6 +93,46 @@ const emptyEditor = (): EditorState => ({
   brushColor: "#ffffff",
   brushSize: 5,
 });
+
+function StoryAudienceChoice({
+  audience,
+  onChange,
+}: {
+  audience: MtuStatusAudience;
+  onChange: (audience: MtuStatusAudience) => void;
+}) {
+  return (
+    <fieldset className="status-audience-choice">
+      <legend>Story audience</legend>
+      <label>
+        <input
+          type="radio"
+          name="status-audience"
+          value="public"
+          checked={audience === "public"}
+          onChange={() => onChange("public")}
+        />
+        <span>
+          <strong>Public Story — visible in Feed</strong>
+          <small>Eligible Convo members can view it for 24 hours. Blocked accounts are excluded.</small>
+        </span>
+      </label>
+      <label>
+        <input
+          type="radio"
+          name="status-audience"
+          value="connections"
+          checked={audience === "connections"}
+          onChange={() => onChange("connections")}
+        />
+        <span>
+          <strong>Private Story — visible to connections in Messages</strong>
+          <small>Only accepted, eligible, unblocked connections can view it for 24 hours.</small>
+        </span>
+      </label>
+    </fieldset>
+  );
+}
 
 const fontChoices = [
   { label: "Editorial", value: "Georgia, serif" },
@@ -160,8 +200,10 @@ function StatusPreview({ status, onNext }: { status: MtuStatus; onNext: () => vo
   );
 }
 
-export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: StatusStoriesProps) {
-  const { statuses, loading, error, refresh, publish, remove, markViewed } = useMtuStatuses(currentUserId);
+export function StatusStories({ currentUserId, displayName, avatarUrl = "", audience = "connections" }: StatusStoriesProps) {
+  const storyAudience = audience;
+  const { statuses, loading, error, refresh, publish, remove, markViewed } = useMtuStatuses(currentUserId, storyAudience);
+  const [draftAudience, setDraftAudience] = React.useState<MtuStatusAudience>("connections");
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [viewerItems, setViewerItems] = React.useState<MtuStatus[]>([]);
   const [viewerIndex, setViewerIndex] = React.useState(0);
@@ -177,6 +219,7 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
   const [currentTime, setCurrentTime] = React.useState(0);
   const [clipStart, setClipStart] = React.useState(0);
   const [clipEnd, setClipEnd] = React.useState(0);
+
   const [videoPlaying, setVideoPlaying] = React.useState(false);
   const [muted, setMuted] = React.useState(true);
   const [volume, setVolume] = React.useState(0.8);
@@ -267,6 +310,7 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
     setUndoStack([]);
     setRedoStack([]);
     setShowEmojiTools(false);
+    setDraftAudience("connections");
     setEditorOpen(true);
   };
 
@@ -503,16 +547,25 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
       let draft: MtuStatusDraft;
       if (editor.kind === "image") {
         const media = exportedMedia || await exportImage();
-        draft = { status_type: "image", text_content: editor.text.trim(), media, metadata: { filter: editor.filter, fit: editor.fit, zoom: editor.zoom, rotation: editor.rotation, pan_x: editor.panX, pan_y: editor.panY, layers: editor.layers, strokes: editor.strokes } };
+        draft = { audience: draftAudience, status_type: "image", text_content: editor.text.trim(), media, metadata: { filter: editor.filter, fit: editor.fit, zoom: editor.zoom, rotation: editor.rotation, pan_x: editor.panX, pan_y: editor.panY, layers: editor.layers, strokes: editor.strokes } };
       } else if (editor.kind === "video") {
         const media = exportedMedia || await exportVideo();
-        draft = { status_type: "video", text_content: editor.text.trim(), media, metadata: { filter: editor.filter, fit: editor.fit, zoom: editor.zoom, rotation: editor.rotation, pan_x: editor.panX, pan_y: editor.panY, clip_start: clipStart, clip_end: clipEnd, layers: editor.layers, strokes: editor.strokes } };
+        draft = { audience: draftAudience, status_type: "video", text_content: editor.text.trim(), media, metadata: { filter: editor.filter, fit: editor.fit, zoom: editor.zoom, rotation: editor.rotation, pan_x: editor.panX, pan_y: editor.panY, clip_start: clipStart, clip_end: clipEnd, layers: editor.layers, strokes: editor.strokes } };
       } else {
-        draft = { status_type: "text", text_content: editor.text.trim(), metadata: { background: editor.background, text_style: { font: editor.textFont, size: editor.textSize, color: editor.brushColor, bold: editor.textBold, italic: editor.textItalic, align: editor.textAlignment } } };
+        draft = { audience: draftAudience, status_type: "text", text_content: editor.text.trim(), metadata: { background: editor.background, text_style: { font: editor.textFont, size: editor.textSize, color: editor.brushColor, bold: editor.textBold, italic: editor.textItalic, align: editor.textAlignment } } };
       }
       const result = await publish(draft);
-      if (result.error) throw new Error(result.error);
-      toast.success("Status posted", { description: "It will be available for 24 hours." });
+      if (result.error) {
+        if (!result.persisted) throw new Error(result.error);
+        toast.success("Your Story was published", { description: "Its preview could not be refreshed. Do not post it again." });
+        resetEditor();
+        return;
+      }
+      toast.success("Your Story was published", {
+        description: draftAudience === "public"
+          ? "Eligible Convo members can see it in Feed for 24 hours, except accounts you have blocked or are blocked by."
+          : "Accepted, eligible, unblocked connections can see it in Messages for 24 hours.",
+      });
       resetEditor();
     } catch (caught) {
       toast.error("Couldn’t post your Status", { description: asErrorMessage(caught) });
@@ -604,7 +657,8 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
 
   return (
     <>
-      <section className="status-stories" aria-label="Status updates">
+      <section className={`status-stories ${audience === "public" ? "status-stories-public" : "status-stories-connections"}`} aria-label={audience === "public" ? "Public Stories" : "Connection Stories"}>
+        <h2 className="status-rail-heading">{audience === "public" ? "Public Stories" : "Stories from connections"}</h2>
         <div className="status-stories-rail">
           <button type="button" className="status-story status-story-mine" aria-label={ownStatuses.length ? `Open your Status, ${ownStatuses.length} updates` : "Add your Status"} title={ownStatuses.length ? "Open your Status" : "Add your Status"} onClick={() => ownStatuses.length ? openViewer(ownStatuses, ownStatuses.length - 1) : openEditor()}>
             <span className={`status-avatar-wrap ${ownStatuses.length ? "has-status" : ""}`}>
@@ -635,6 +689,7 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
                 : <button type="button" className="status-action-button" onClick={() => void createPreview()} disabled={editorBusy}>{editorBusy ? "Preparing…" : "Preview"} <Eye size={14} /></button>}
             </header>
             {editorBusy && <div className="status-processing" role="status"><span>{processingLabel || "Working…"}</span></div>}
+            <StoryAudienceChoice audience={draftAudience} onChange={setDraftAudience} />
 
             {showPreview ? (
               <div className="status-preview-layout">
@@ -674,7 +729,10 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
                 </div>
 
                 <div className="status-tools">
-                  <div className="status-tool-row">
+                <p className="status-audience-note">{draftAudience === "public"
+                  ? "Visible in Feed to eligible, unblocked Convo members for 24 hours."
+                  : "Visible in Messages only to accepted, eligible, unblocked connections for 24 hours."}</p>
+                <div className="status-tool-row">
                     <button type="button" className="status-secondary-button" onClick={() => mediaInput.current?.click()}><Plus size={14} /> {editor.media ? "Change media" : "Add media"}</button>
                     <input ref={mediaInput} hidden type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime" onChange={(event) => { selectMedia(event.target.files?.[0]); event.currentTarget.value = ""; }} />
                     <button type="button" className="status-secondary-button" onClick={() => addLayer()} disabled={editor.kind === "text"}><span className="status-aa">Aa</span> Text</button>
@@ -713,7 +771,9 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
                     </div>}
                     {!!editor.layers.length && <div className="status-layer-list" role="group" aria-label="Text layers">{editor.layers.map((layer, index) => <button type="button" key={layer.id} className={selectedLayer === layer.id ? "is-active" : ""} onClick={() => setSelectedLayer(layer.id)}>{index + 1}. {layer.text.slice(0, 18) || "Empty text"}</button>)}</div>}
                   </div>}
-                  <p className="status-editor-note">{editor.kind === "video" ? "Video keeps its original quality. Trim, crop, filters, and text are saved with it; keep it under 25 MB." : editor.kind === "image" ? "Your edited image is processed and uploaded; the original stays on your device." : "Only active MTU students can view your Status."}</p>
+                  <p className="status-editor-note">{draftAudience === "public"
+                    ? "Public Stories appear in Feed for eligible, unblocked Convo members and expire after 24 hours."
+                    : "Private Stories appear in Messages for accepted, eligible, unblocked connections and expire after 24 hours."}</p>
                 </div>
               </div>
             )}
@@ -727,7 +787,7 @@ export function StatusStories({ currentUserId, displayName, avatarUrl = "" }: St
           <section className="status-viewer" role="dialog" aria-modal="true" aria-label={`${currentStatus.display_name} Status`}>
             <div className="status-viewer-progress" aria-hidden="true">{viewerItems.map((status, index) => <span key={status.status_id} className={index <= viewerIndex ? "is-filled" : ""} />)}</div>
             <header className="status-viewer-header">
-              <span className="status-viewer-person">{currentStatus.avatar_url ? <img src={currentStatus.avatar_url} alt="" /> : <span>{currentStatus.display_name.slice(0, 2).toUpperCase()}</span>}<b>{currentStatus.display_name}</b><small>{new Date(currentStatus.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small></span>
+              <span className="status-viewer-person">{currentStatus.avatar_url ? <img src={currentStatus.avatar_url} alt="" /> : <span>{currentStatus.display_name.slice(0, 2).toUpperCase()}</span>}<b>{currentStatus.display_name}</b><small>{currentStatus.audience === "public" ? "Public · Feed" : "Private · Connections"} · {new Date(currentStatus.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</small></span>
               {currentStatus.user_id === currentUserId && <span className="status-owner-views"><Eye size={13} /> {currentStatus.view_count}</span>}
               {currentStatus.user_id === currentUserId && <button type="button" className="status-icon-button status-delete-button" aria-label="Delete this Status" onClick={() => setDeleteTarget(currentStatus.status_id)}><Trash2 size={15} /></button>}
               <button type="button" className="status-icon-button" aria-label="Close Status viewer" onClick={() => setViewerItems([])}><X size={17} /></button>

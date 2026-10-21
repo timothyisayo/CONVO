@@ -31,6 +31,8 @@ afterEach(() => {
 
 describe("StatusStories", () => {
   beforeEach(() => {
+    const createdAt = new Date(Date.now() - 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString();
     statusesMock.splice(0, statusesMock.length, {
       status_id: "status-1",
       user_id: "student-1",
@@ -39,8 +41,8 @@ describe("StatusStories", () => {
       media_path: null,
       media_url: null,
       metadata: {},
-      created_at: "2026-10-03T00:00:00.000Z",
-      expires_at: "2026-10-04T00:00:00.000Z",
+      created_at: createdAt,
+      expires_at: expiresAt,
       display_name: "Ada Lovelace",
       avatar_url: null,
       view_count: 2,
@@ -62,7 +64,7 @@ describe("StatusStories", () => {
     vi.spyOn(window, "prompt").mockImplementation(() => { throw new Error("Native prompt must not be used"); });
   });
 
-  it("opens the text editor, previews a text Status, and returns to editing", () => {
+  it("opens the text editor, previews a text Story, and returns to editing", () => {
     render(<StatusStories currentUserId="student-1" displayName="Ada Lovelace" />);
 
     expect(screen.queryByText("Around Convo")).toBeNull();
@@ -79,6 +81,31 @@ describe("StatusStories", () => {
     expect(screen.getByText("Study group at noon")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Back to edit/ }));
     expect(screen.getByRole("dialog", { name: "Create Status" })).toBe(dialog);
+  });
+
+  it("defaults to private sharing and lets the author explicitly select Public Story", () => {
+    render(<StatusStories currentUserId="student-1" displayName="Ada Lovelace" audience="public" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create Status" }));
+
+    expect(screen.getByRole("radio", { name: /Private Story — visible to connections in Messages/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: /Public Story — visible in Feed/ }));
+    expect(screen.getByRole("radio", { name: /Public Story — visible in Feed/ })).toBeChecked();
+  });
+
+  it("explains Story audiences and publishes with the selected audience", async () => {
+    render(<StatusStories currentUserId="student-1" displayName="Ada Lovelace" audience="public" />);
+    fireEvent.click(screen.getByRole("button", { name: "Create Status" }));
+    expect(screen.getByText("Eligible Convo members can view it for 24 hours. Blocked accounts are excluded.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /Private Story — visible to connections in Messages/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Status text" }), { target: { value: "Study group at noon" } });
+    fireEvent.click(screen.getByRole("button", { name: /Preview/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Post status/ }));
+
+    await vi.waitFor(() => expect(publishMock).toHaveBeenCalledWith(expect.objectContaining({
+      audience: "connections",
+      status_type: "text",
+      text_content: "Study group at noon",
+    })));
   });
 
   it("shows each Status owner's name beneath their circle", () => {

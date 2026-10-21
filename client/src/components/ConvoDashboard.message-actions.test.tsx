@@ -4,6 +4,18 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConvoDashboard } from "./ConvoDashboard";
 
+vi.mock("@/hooks/useMtuStatuses", () => ({
+  useMtuStatuses: () => ({
+    statuses: [],
+    loading: false,
+    error: "",
+    refresh: vi.fn(),
+    publish: vi.fn(),
+    remove: vi.fn(),
+    markViewed: vi.fn(),
+  }),
+}));
+
 const currentMessage = { id: "message-own", conversation_id: "conversation-1", sender_id: "student-1", body: "Original note", created_at: new Date().toISOString() };
 const otherConversation = { id: "conversation-2", title: "Study group", kind: "group", last_message: null };
 

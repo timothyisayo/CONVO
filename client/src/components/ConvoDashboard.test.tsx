@@ -54,6 +54,83 @@ describe("ConvoDashboard", () => {
     expect(screen.queryByText("4")).toBeNull();
   });
 
+  it("keeps Feed directly available in the workspace navigation", () => {
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    const dock = screen.getByRole("navigation", { name: "Convo workspace" });
+    expect(within(dock).getByRole("button", { name: "Feed" })).toBeTruthy();
+  });
+
+  it("shows live follower counts and saves independent follow-list privacy", async () => {
+    const onLoadStudentFollowState = vi.fn(async () => ({
+      data: [{ student_id: "self", follower_count: 5, following_count: 7, followed_by_me: false }],
+      error: null,
+    }));
+    const onLoadStudentFollows = vi.fn(async () => ({ data: [], error: null }));
+    const onLoadStudentFollowPrivacy = vi.fn(async () => ({
+      data: { followers_visibility: "private" as const, following_visibility: "private" as const },
+      error: null,
+    }));
+    const onSetStudentFollowPrivacy = vi.fn(async () => ({ ok: true }));
+    render(<ConvoDashboard
+      currentUserId="self"
+      displayName="Ada"
+      major="Computer Science"
+      groups={[]}
+      posts={[]}
+      onLoadStudentFollowState={onLoadStudentFollowState}
+      onLoadStudentFollows={onLoadStudentFollows}
+      onLoadStudentFollowPrivacy={onLoadStudentFollowPrivacy}
+      onSetStudentFollowPrivacy={onSetStudentFollowPrivacy}
+      onExit={() => undefined}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Profile" }));
+    expect(await screen.findByRole("heading", { name: "Followers & following" })).toBeTruthy();
+    await waitFor(() => expect(onLoadStudentFollowState).toHaveBeenCalled());
+    expect(screen.getByText("5")).toBeTruthy();
+    expect(screen.getByText("7")).toBeTruthy();
+    expect(await screen.findByRole("checkbox", { name: /Private social lists/ })).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Who can see your followers" }), { target: { value: "followers" } });
+    await waitFor(() => expect(onSetStudentFollowPrivacy).toHaveBeenCalledWith({
+      followers_visibility: "followers",
+      following_visibility: "private",
+    }));
+  });
+
+  it("keeps Campus Hub available from the compact More menu", () => {
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    const dock = screen.getByRole("navigation", { name: "Convo workspace" });
+    fireEvent.click(within(dock).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Campus Hub/ }));
+    expect(within(dock).getByRole("button", { name: "Feed" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("heading", { name: "Yourfeed." })).toBeTruthy();
+  });
+
+  it("opens Student Marketplace as its own destination from More", () => {
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    const dock = screen.getByRole("navigation", { name: "Convo workspace" });
+    fireEvent.click(within(dock).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Marketplace/ }));
+    expect(screen.getByRole("heading", { name: "Student Marketplace" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /Campus Hub/ })).toBeNull();
+  });
+
+  it("opens Feed from the home feed's View all action", () => {
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: /View all/ }));
+    expect(screen.getByRole("button", { name: "Open Feed" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("keeps Vault available from the compact More menu", () => {
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
+    const dock = screen.getByRole("navigation", { name: "Convo workspace" });
+    fireEvent.click(within(dock).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Convo Vault/ }));
+    expect(screen.getByRole("button", { name: /Open .*Vault/ }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("keeps unread messages out of the notification badge", async () => {
     let onIncomingMessage: ((message: Record<string, unknown>) => void) | undefined;
     const onLoadConversations = vi.fn(async () => ({ data: [{ id: "conversation-1", title: "Live chat", kind: "direct", last_message: "Hello", unread_count: 0 }], error: null }));
@@ -316,7 +393,9 @@ describe("ConvoDashboard", () => {
     expect(screen.getByText("Campus Football")).toBeTruthy();
     expect(screen.queryByText("Business Admin")).toBeNull();
     fireEvent.change(search, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("tab", { name: "Sports" }));
+    const sportsCategory = screen.getByRole("button", { name: "Sports" });
+    fireEvent.click(sportsCategory);
+    expect(sportsCategory.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Campus Football")).toBeTruthy();
     expect(screen.queryByText("Business Admin")).toBeNull();
   });
@@ -372,6 +451,40 @@ describe("expanded Convo workspace", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Connect/ }).length).toBeGreaterThan(0));
     fireEvent.click(screen.getAllByRole("button", { name: /Connect/ })[0]);
     expect(await screen.findByText("Request sent")).toBeTruthy();
+  });
+
+  it("keeps following separate from connection requests in the student directory", async () => {
+    const onSearchStudents = vi.fn().mockResolvedValue({
+      data: [{ id: "student-2", display_name: "Mariam A.", student_id: "MTU-26-7K4Q2", programme: "Computer Science", department: "CBAS", level: "300L", status_text: "Available" }],
+      error: null,
+    });
+    const onLoadStudentFollowState = vi.fn().mockResolvedValue({
+      data: [{ student_id: "student-2", follower_count: 4, following_count: 2, followed_by_me: false }],
+      error: null,
+    });
+    const onSetStudentFollow = vi.fn(async () => ({ ok: true }));
+    const onSendConnectionRequest = vi.fn(async () => ({ ok: true }));
+    render(<ConvoDashboard
+      currentUserId="student-1"
+      displayName="Ada"
+      major="Computer Science"
+      groups={[]}
+      posts={[]}
+      onSearchStudents={onSearchStudents}
+      onLoadStudentFollowState={onLoadStudentFollowState}
+      onSetStudentFollow={onSetStudentFollow}
+      onSendConnectionRequest={onSendConnectionRequest}
+      onExit={() => undefined}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    const followButton = await screen.findByRole("button", { name: "Follow" });
+    expect(screen.getByText("4 followers · 2 following")).toBeTruthy();
+    fireEvent.click(followButton);
+    expect(await screen.findByRole("button", { name: "Following" })).toBeTruthy();
+    expect(onSetStudentFollow).toHaveBeenCalledWith("student-2", true);
+    expect(onSendConnectionRequest).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Request sent" })).toBeNull();
   });
 
   it("opens a compact Messages surface without active-chat empty-state marketing copy", () => {
@@ -902,12 +1015,34 @@ describe("full-scope collaboration surfaces", () => {
   it("offers the requested categories in group discovery and creation", async () => {
     render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onExit={() => undefined} />);
     fireEvent.click(screen.getByRole("button", { name: "Open Groups" }));
-    expect(screen.getByRole("tab", { name: "Code & Tech" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Cruise" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Code & Tech" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "Cruise" }).getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(screen.getByRole("button", { name: "Create group" }));
     expect(await screen.findByRole("combobox", { name: "Group category" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Code & Tech" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Cruise" })).toBeTruthy();
+  });
+
+  it("renders the authenticated group directory and join action", async () => {
+    const onSearchGroups = vi.fn(async () => ({
+      data: [{
+        conversation_id: "group-1",
+        title: "Project circle",
+        category: "project",
+        group_image_url: null,
+        member_count: 3,
+        is_member: false,
+        my_request_status: null,
+      }],
+      error: null,
+    }));
+    render(<ConvoDashboard displayName="Ada" major="Computer Science" groups={[]} posts={[]} onSearchGroups={onSearchGroups} onExit={() => undefined} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Groups" }));
+
+    expect(await screen.findByRole("heading", { name: "Project circle" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Request to join" })).toBeTruthy();
+    expect(onSearchGroups).toHaveBeenCalledWith("", "all");
   });
 
   it("loads an event in the standalone Events section and updates attendance", async () => {

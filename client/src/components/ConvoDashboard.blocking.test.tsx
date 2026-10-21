@@ -1,8 +1,21 @@
 // @vitest-environment jsdom
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConvoDashboard } from "./ConvoDashboard";
+
+vi.mock("@/hooks/useMtuStatuses", () => ({
+  useMtuStatuses: () => ({
+    statuses: [],
+    loading: false,
+    error: "",
+    refresh: vi.fn(),
+    publish: vi.fn(),
+    remove: vi.fn(),
+    markViewed: vi.fn(),
+  }),
+}));
+afterEach(cleanup);
 
 describe("retained direct-chat block behavior", () => {
   it("keeps the sender's blocked-period message in their thread with a neutral single tick", async () => {

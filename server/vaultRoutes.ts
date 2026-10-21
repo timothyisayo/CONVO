@@ -6,6 +6,8 @@ import { ENV, isVaultEnabled } from "./_core/env";
 
 type Vault = { auth: Authed; notebookId: string };
 
+class VaultResourceNotFoundError extends Error {}
+
 function fail(res: Response, status: number, message: string) {
   return res.status(status).json({ error: message });
 }
@@ -125,26 +127,26 @@ async function requireVault(req: Request, res: Response): Promise<Vault | null> 
 }
 
 async function ownedSource(vault: Vault, sourceId: string) {
-  if (!/^source:[A-Za-z0-9_-]+$/.test(sourceId)) throw new Error("Invalid source ID.");
+  if (!/^source:[A-Za-z0-9_-]+$/.test(sourceId)) throw new VaultResourceNotFoundError("Invalid source ID.");
   const source = await openNotebookRequest<{ notebooks?: string[] }>(
     `/api/sources/${encodeURIComponent(sourceId)}`,
     {},
     vault.auth.user.id,
   );
   if (!Array.isArray(source.notebooks) || !source.notebooks.includes(vault.notebookId)) {
-    throw new Error("Source is not owned by this Vault.");
+    throw new VaultResourceNotFoundError("Source is not owned by this Vault.");
   }
   return source;
 }
 
 async function ownedNote(vault: Vault, noteId: string) {
-  if (!/^note:[A-Za-z0-9_-]+$/.test(noteId)) throw new Error("Invalid note ID.");
+  if (!/^note:[A-Za-z0-9_-]+$/.test(noteId)) throw new VaultResourceNotFoundError("Invalid note ID.");
   const notes = await openNotebookRequest<Array<{ id?: string }>>(
     `/api/notes?notebook_id=${encodeURIComponent(vault.notebookId)}`,
     {},
     vault.auth.user.id,
   );
-  if (!notes.some((note) => note.id === noteId)) throw new Error("Note is not owned by this Vault.");
+  if (!notes.some((note) => note.id === noteId)) throw new VaultResourceNotFoundError("Note is not owned by this Vault.");
 }
 
 export function registerVaultRoutes(app: Express) {
@@ -219,13 +221,20 @@ export function registerVaultRoutes(app: Express) {
   app.post("/api/vault/notes", async (req, res) => {
     const vault = await requireVault(req, res);
     if (!vault) return;
+    const title = typeof req.body?.title === "string" && req.body.title.trim()
+      ? req.body.title.trim()
+      : "Convo Vault note";
+    const content = typeof req.body?.content === "string" ? req.body.content : "";
+    if (title.length > 120 || !content.trim() || content.length > 20000) {
+      return fail(res, 400, "Note titles must be 120 characters or fewer and note content must contain 1 to 20,000 characters.");
+    }
     try {
       return res.json(await openNotebookRequest("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: String(req.body?.title || "Convo Vault note"),
-          content: String(req.body?.content || ""),
+          title,
+          content,
           note_type: "human",
           notebook_id: vault.notebookId,
           owner_id: vault.auth.user.id,
@@ -299,6 +308,17 @@ export function registerVaultRoutes(app: Express) {
       if (!vault) return;
       try {
         await ownedSource(vault, req.params.sourceId);
+      } catch (error) {
+        if (error instanceof VaultResourceNotFoundError) return fail(res, 404, "Vault source not found.");
+        console.error("Vault source ownership check failed", error);
+        return fail(res, 502, "Vault could not verify this source.");
+      }
+      if (method === "PUT") {
+        const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+        if (!title || title.length > 120) return fail(res, 400, "Source titles must contain 1 to 120 characters.");
+        req.body = { title };
+      }
+      try {
         const suffix = kind === "status" ? "/status" : kind === "retry" ? "/retry" : "";
         const result = await openNotebookRequest(`/api/sources/${encodeURIComponent(req.params.sourceId)}${suffix}`, {
           method,
@@ -306,7 +326,10 @@ export function registerVaultRoutes(app: Express) {
           body: method === "PUT" ? JSON.stringify(req.body ?? {}) : undefined,
         }, vault.auth.user.id);
         return res.json(result ?? { ok: true });
-      } catch { return fail(res, 404, "Vault source not found."); }
+      } catch (error) {
+        console.error(`Vault source ${kind} failed`, error);
+        return fail(res, 502, "Vault could not update this source.");
+      }
     };
   }
 
@@ -328,13 +351,30 @@ export function registerVaultRoutes(app: Express) {
       if (!vault) return;
       try {
         await ownedNote(vault, req.params.noteId);
+      } catch (error) {
+        if (error instanceof VaultResourceNotFoundError) return fail(res, 404, "Vault note not found.");
+        console.error("Vault note ownership check failed", error);
+        return fail(res, 502, "Vault could not verify this note.");
+      }
+      if (method === "PUT") {
+        const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+        const content = typeof req.body?.content === "string" ? req.body.content : "";
+        if (!title || title.length > 120 || content.length > 20000) {
+          return fail(res, 400, "Note titles must contain 1 to 120 characters and note content must be 20,000 characters or fewer.");
+        }
+        req.body = { title, content };
+      }
+      try {
         const result = await openNotebookRequest(`/api/notes/${encodeURIComponent(req.params.noteId)}`, {
           method,
           headers: method === "PUT" ? { "Content-Type": "application/json" } : undefined,
           body: method === "PUT" ? JSON.stringify(req.body ?? {}) : undefined,
         }, vault.auth.user.id);
         return res.json(result ?? { ok: true });
-      } catch { return fail(res, 404, "Vault note not found."); }
+      } catch (error) {
+        console.error("Vault note update failed", error);
+        return fail(res, 502, "Vault could not update this note.");
+      }
     };
   }
 }

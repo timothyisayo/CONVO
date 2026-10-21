@@ -118,6 +118,181 @@ export async function searchMtuStudents(client: Pick<SupabaseClient, "rpc">, que
   return { data: (data || []) as MtuStudent[], error };
 }
 
+export type MtuStudentFollowState = {
+  student_id: string;
+  follower_count: number;
+  following_count: number;
+  followed_by_me: boolean;
+};
+
+export async function listMtuStudentFollowState(client: Pick<SupabaseClient, "rpc">, studentIds: string[]) {
+  if (!studentIds.length) return { data: [] as MtuStudentFollowState[], error: null };
+  const { data, error } = await client.rpc("list_mtu_student_follow_state", { p_student_ids: studentIds });
+  if (error) return { data: [] as MtuStudentFollowState[], error };
+  if (!Array.isArray(data)) {
+    return { data: [] as MtuStudentFollowState[], error: new Error("The student follow service returned an invalid response.") };
+  }
+  const rows: MtuStudentFollowState[] = [];
+  for (const row of data as unknown[]) {
+    if (typeof row !== "object" || row === null) {
+      return { data: [] as MtuStudentFollowState[], error: new Error("The student follow service returned an invalid response.") };
+    }
+    const value = row as Record<string, unknown>;
+    if (
+      typeof value.student_id !== "string"
+      || typeof value.followed_by_me !== "boolean"
+      || !Number.isFinite(Number(value.follower_count))
+      || !Number.isFinite(Number(value.following_count))
+    ) {
+      return { data: [] as MtuStudentFollowState[], error: new Error("The student follow service returned an invalid response.") };
+    }
+    rows.push({
+      student_id: value.student_id,
+      follower_count: Number(value.follower_count),
+      following_count: Number(value.following_count),
+      followed_by_me: value.followed_by_me,
+    });
+  }
+  return { data: rows, error: null };
+}
+
+export type MtuStudentFollowProfile = MtuStudent & {
+  follower_count: number;
+  following_count: number;
+};
+
+function parseMtuStudentFollowProfiles(data: unknown) {
+  if (!Array.isArray(data)) {
+    return { data: [] as MtuStudentFollowProfile[], error: new Error("The student follow list returned an invalid response.") };
+  }
+  const profiles: MtuStudentFollowProfile[] = [];
+  for (const row of data as unknown[]) {
+    if (typeof row !== "object" || row === null) {
+      return { data: [] as MtuStudentFollowProfile[], error: new Error("The student follow list returned an invalid response.") };
+    }
+    const value = row as Record<string, unknown>;
+    if (
+      typeof value.id !== "string"
+      || typeof value.display_name !== "string"
+      || !Number.isFinite(Number(value.follower_count))
+      || !Number.isFinite(Number(value.following_count))
+    ) {
+      return { data: [] as MtuStudentFollowProfile[], error: new Error("The student follow list returned an invalid response.") };
+    }
+    profiles.push({
+      id: value.id,
+      display_name: value.display_name,
+      student_id: typeof value.student_id === "string" ? value.student_id : null,
+      is_self: false,
+      level: typeof value.level === "string" ? value.level : null,
+      department: typeof value.department === "string" ? value.department : null,
+      programme: typeof value.programme === "string" ? value.programme : null,
+      avatar_url: typeof value.avatar_url === "string" ? value.avatar_url : null,
+      bio: typeof value.bio === "string" ? value.bio : null,
+      status_text: typeof value.status_text === "string" ? value.status_text : null,
+      follower_count: Number(value.follower_count),
+      following_count: Number(value.following_count),
+    });
+  }
+  return { data: profiles, error: null };
+}
+
+export async function listMtuStudentFollows(client: Pick<SupabaseClient, "rpc">, direction: "following" | "followers" = "following") {
+  const { data, error } = await client.rpc("list_mtu_student_follows", { p_direction: direction });
+  if (error) return { data: [] as MtuStudentFollowProfile[], error };
+  return parseMtuStudentFollowProfiles(data);
+}
+
+export async function listMtuStudentFollowsFor(client: Pick<SupabaseClient, "rpc">, profileId: string, direction: "following" | "followers") {
+  const { data, error } = await client.rpc("list_mtu_student_follows_for", {
+    p_profile_id: profileId,
+    p_direction: direction,
+  });
+  if (error) return { data: [] as MtuStudentFollowProfile[], error };
+  return parseMtuStudentFollowProfiles(data);
+}
+
+export type MtuStudentFollowListVisibility = {
+  followers_visibility: "public" | "followers" | "private";
+  following_visibility: "public" | "followers" | "private";
+};
+
+export async function getMtuStudentFollowListVisibility(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("get_mtu_student_follow_list_visibility");
+  if (error) return { data: null as MtuStudentFollowListVisibility | null, error };
+  if (!Array.isArray(data) || typeof data[0] !== "object" || data[0] === null) {
+    return { data: null as MtuStudentFollowListVisibility | null, error: new Error("Profile follow privacy returned an invalid response.") };
+  }
+  const value = data[0] as Record<string, unknown>;
+  const allowed = (item: unknown): item is MtuStudentFollowListVisibility["followers_visibility"] =>
+    item === "public" || item === "followers" || item === "private";
+  if (!allowed(value.followers_visibility) || !allowed(value.following_visibility)) {
+    return { data: null as MtuStudentFollowListVisibility | null, error: new Error("Profile follow privacy returned an invalid response.") };
+  }
+  return { data: { followers_visibility: value.followers_visibility, following_visibility: value.following_visibility }, error: null };
+}
+
+export async function setMtuStudentFollowListVisibility(client: Pick<SupabaseClient, "rpc">, visibility: MtuStudentFollowListVisibility) {
+  const { data, error } = await client.rpc("set_mtu_student_follow_list_visibility", {
+    p_followers_visibility: visibility.followers_visibility,
+    p_following_visibility: visibility.following_visibility,
+  });
+  return { data: data === true, error };
+}
+
+export async function removeMtuStudentFollower(client: Pick<SupabaseClient, "rpc">, followerId: string) {
+  const { data, error } = await client.rpc("remove_mtu_student_follower", { p_follower_id: followerId });
+  return { data: data === true, error };
+}
+
+export type MtuStudentContentRestriction = {
+  user_id: string;
+  display_name: string;
+  avatar_url: string | null;
+  created_at: string;
+};
+
+export async function listMtuStudentContentRestrictions(client: Pick<SupabaseClient, "rpc">) {
+  const { data, error } = await client.rpc("list_mtu_student_content_restrictions");
+  if (error) return { data: [] as MtuStudentContentRestriction[], error };
+  if (!Array.isArray(data)) {
+    return { data: [] as MtuStudentContentRestriction[], error: new Error("Content restrictions returned an invalid response.") };
+  }
+  const rows: MtuStudentContentRestriction[] = [];
+  for (const row of data as unknown[]) {
+    if (typeof row !== "object" || row === null) {
+      return { data: [] as MtuStudentContentRestriction[], error: new Error("Content restrictions returned an invalid response.") };
+    }
+    const value = row as Record<string, unknown>;
+    if (typeof value.user_id !== "string" || typeof value.display_name !== "string" || typeof value.created_at !== "string") {
+      return { data: [] as MtuStudentContentRestriction[], error: new Error("Content restrictions returned an invalid response.") };
+    }
+    rows.push({
+      user_id: value.user_id,
+      display_name: value.display_name,
+      avatar_url: typeof value.avatar_url === "string" ? value.avatar_url : null,
+      created_at: value.created_at,
+    });
+  }
+  return { data: rows, error: null };
+}
+
+export async function setMtuStudentContentRestriction(client: Pick<SupabaseClient, "rpc">, studentId: string, restricted: boolean) {
+  const { data, error } = await client.rpc("set_mtu_student_content_restriction", {
+    p_student_id: studentId,
+    p_restricted: restricted,
+  });
+  return { data: data === true, error };
+}
+
+export async function setMtuStudentFollow(client: Pick<SupabaseClient, "rpc">, studentId: string, following: boolean) {
+  const { data, error } = await client.rpc("set_mtu_student_follow", {
+    p_student_id: studentId,
+    p_following: following,
+  });
+  return { data: data === true, error };
+}
+
 export async function syncMyMtuDirectoryProfile(client: Pick<SupabaseClient, "rpc">) {
   const { data, error } = await client.rpc("sync_my_mtu_profile");
   return { data: Boolean(data), error };
@@ -427,9 +602,11 @@ export async function searchMtuConversationMessages(client: Pick<SupabaseClient,
 }
 
 export type MtuStatusViewer = { user_id: string; display_name: string; avatar_url: string | null; viewed_at: string };
+export type MtuStatusAudience = "public" | "connections";
 export type MtuStatus = {
   status_id: string;
   user_id: string;
+  audience: MtuStatusAudience;
   status_type: "text" | "image" | "video";
   text_content: string;
   media_path: string | null;
@@ -444,6 +621,7 @@ export type MtuStatus = {
   viewers: MtuStatusViewer[];
 };
 export type MtuStatusDraft = {
+  audience: MtuStatusAudience;
   status_type: MtuStatus["status_type"];
   text_content: string;
   media?: File | null;
@@ -462,13 +640,61 @@ export function validateMtuStatusMedia(file: Pick<File, "type" | "size"> | null,
   return { valid: true as const, error: "" };
 }
 
-export async function listMtuStatuses(client: Pick<SupabaseClient, "rpc" | "storage">) {
-  const { data, error } = await client.rpc("list_mtu_statuses");
+async function cleanupMtuStatusUpload(client: Pick<SupabaseClient, "storage">, mediaPath: string) {
+  try {
+    const { error } = await client.storage.from("status-media").remove([mediaPath]);
+    return error;
+  } catch (caught) {
+    return caught instanceof Error ? caught : new Error("Story media cleanup failed.");
+  }
+}
+
+function isMtuStatusViewer(value: unknown): value is MtuStatusViewer {
+  if (typeof value !== "object" || value === null) return false;
+  const viewer = value as Record<string, unknown>;
+  return typeof viewer.user_id === "string"
+    && typeof viewer.display_name === "string"
+    && (typeof viewer.avatar_url === "string" || viewer.avatar_url === null)
+    && typeof viewer.viewed_at === "string";
+}
+
+function isMtuStatus(value: unknown): value is Omit<MtuStatus, "media_url"> & { viewers: MtuStatusViewer[] | null } {
+  if (typeof value !== "object" || value === null) return false;
+  const status = value as Record<string, unknown>;
+  return typeof status.status_id === "string"
+    && typeof status.user_id === "string"
+    && (status.audience === "public" || status.audience === "connections")
+    && (status.status_type === "text" || status.status_type === "image" || status.status_type === "video")
+    && typeof status.text_content === "string"
+    && (typeof status.media_path === "string" || status.media_path === null)
+    && typeof status.metadata === "object" && status.metadata !== null && !Array.isArray(status.metadata)
+    && typeof status.created_at === "string"
+    && typeof status.expires_at === "string"
+    && typeof status.display_name === "string"
+    && (typeof status.avatar_url === "string" || status.avatar_url === null)
+    && typeof status.view_count === "number" && Number.isFinite(status.view_count)
+    && typeof status.viewed_by_me === "boolean"
+    && (status.viewers === null || (Array.isArray(status.viewers) && status.viewers.every(isMtuStatusViewer)))
+    && (status.status_type === "text" ? status.media_path === null : typeof status.media_path === "string")
+    && Number.isFinite(Date.parse(status.created_at))
+    && Number.isFinite(Date.parse(status.expires_at));
+}
+
+export async function listMtuStatuses(client: Pick<SupabaseClient, "rpc" | "storage">, audience: MtuStatusAudience) {
+  const { data, error } = await client.rpc("list_mtu_statuses_for", { p_audience: audience });
   if (error) return { data: [] as MtuStatus[], error };
-  const statuses = (data || []) as Array<Omit<MtuStatus, "media_url"> & { viewers: MtuStatusViewer[] | null }>;
-  const signed = await Promise.all(statuses.map(async (status) => {
+  if (!Array.isArray(data) || !data.every((status) => isMtuStatus(status) && status.audience === audience)) {
+    return { data: [] as MtuStatus[], error: new Error("The Stories service returned an invalid response. Apply the current Story audience migration and try again.") };
+  }
+  const statuses = data as Array<Omit<MtuStatus, "media_url"> & { viewers: MtuStatusViewer[] | null }>;
+  const activeStatuses = statuses.filter((status) => Date.parse(status.expires_at) > Date.now());
+  const signed = await Promise.all(activeStatuses.map(async (status) => {
     if (!status.media_path) return { ...status, media_url: null, viewers: status.viewers || [] } as MtuStatus;
-    const lifetime = Math.max(60, Math.min(24 * 60 * 60, Math.floor((Date.parse(status.expires_at) - Date.now()) / 1000)));
+    const remainingSeconds = Math.floor((Date.parse(status.expires_at) - Date.now()) / 1000);
+    if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
+      return { ...status, media_url: null, viewers: status.viewers || [] } as MtuStatus;
+    }
+    const lifetime = Math.min(60, remainingSeconds);
     const { data: urlData, error: urlError } = await client.storage.from("status-media").createSignedUrl(status.media_path, lifetime);
     if (urlError) throw new Error(`Couldn’t open an active Status: ${urlError.message}`);
     return { ...status, media_url: urlData.signedUrl, viewers: status.viewers || [] } as MtuStatus;
@@ -477,53 +703,146 @@ export async function listMtuStatuses(client: Pick<SupabaseClient, "rpc" | "stor
 }
 
 export async function publishMtuStatus(client: Pick<SupabaseClient, "from" | "storage" | "rpc">, userId: string, draft: MtuStatusDraft) {
+  if (draft.audience !== "public" && draft.audience !== "connections") {
+    return { data: null as MtuStatus | null, persisted: false, error: new Error("Choose a valid Story audience.") };
+  }
   const text = draft.text_content.trim();
-  if (draft.status_type === "text" && (!text || text.length > 700)) return { data: null as MtuStatus | null, error: new Error("Text Statuses must contain 1 to 700 characters.") };
-  if (draft.status_type !== "text" && !draft.media) return { data: null as MtuStatus | null, error: new Error("Choose edited media before posting.") };
+  if (draft.status_type === "text" && (!text || text.length > 700)) return { data: null as MtuStatus | null, persisted: false, error: new Error("Text Statuses must contain 1 to 700 characters.") };
+  if (draft.status_type === "text" && draft.media) return { data: null as MtuStatus | null, persisted: false, error: new Error("Text Stories cannot include an uploaded media file.") };
+  if (draft.status_type !== "text" && !draft.media) return { data: null as MtuStatus | null, persisted: false, error: new Error("Choose edited media before posting.") };
+  if (draft.status_type !== "text" && text.length > 700) return { data: null as MtuStatus | null, persisted: false, error: new Error("Story captions must be 700 characters or fewer.") };
 
   let mediaPath: string | null = null;
   if (draft.media) {
     const mediaKind = draft.status_type === "video" ? "video" : "image";
     const validation = validateMtuStatusMedia(draft.media, mediaKind);
-    if (!validation.valid) return { data: null as MtuStatus | null, error: new Error(validation.error) };
+    if (!validation.valid) return { data: null as MtuStatus | null, persisted: false, error: new Error(validation.error) };
     const extension = draft.media.type === "image/jpeg" ? "jpg" : draft.media.type.split("/")[1]?.replace("quicktime", "mov") || "bin";
     mediaPath = `${userId}/${crypto.randomUUID()}.${extension}`;
-    const uploaded = await client.storage.from("status-media").upload(mediaPath, draft.media, { upsert: false, contentType: draft.media.type, cacheControl: "3600" });
-    if (uploaded.error) return { data: null as MtuStatus | null, error: uploaded.error };
-  }
-
-  const inserted = await client.from("status_posts").insert({
-    user_id: userId,
-    status_type: draft.status_type,
-    text_content: text,
-    media_path: mediaPath,
-    metadata: draft.metadata || {},
-    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-  }).select("id").single();
-  if (inserted.error || !inserted.data) {
-    if (mediaPath) {
-      const cleanup = await client.storage.from("status-media").remove([mediaPath]);
-      if (cleanup.error) return { data: null as MtuStatus | null, error: new Error(`${inserted.error?.message || "Couldn’t save Status."} Media cleanup also failed: ${cleanup.error.message}`) };
+    try {
+      const uploaded = await client.storage.from("status-media").upload(mediaPath, draft.media, { upsert: false, contentType: draft.media.type, cacheControl: "60" });
+      if (uploaded.error) {
+        const cleanup = await cleanupMtuStatusUpload(client, mediaPath);
+        return {
+          data: null as MtuStatus | null,
+          persisted: false,
+          error: new Error(cleanup ? `${uploaded.error.message} Media cleanup also failed: ${cleanup.message}` : uploaded.error.message),
+        };
+      }
+    } catch (caught) {
+      const cleanup = await cleanupMtuStatusUpload(client, mediaPath);
+      const message = caught instanceof Error ? caught.message : "Couldn’t upload Story media.";
+      return {
+        data: null as MtuStatus | null,
+        persisted: false,
+        error: new Error(cleanup ? `${message} Media cleanup also failed: ${cleanup.message}` : message),
+      };
     }
-    return { data: null as MtuStatus | null, error: inserted.error || new Error("Couldn’t save Status.") };
   }
 
-  const refreshed = await listMtuStatuses(client);
-  if (refreshed.error) return { data: null as MtuStatus | null, error: refreshed.error };
-  return { data: refreshed.data.find((status) => status.status_id === inserted.data.id) || null, error: null };
+  let publishedStatusId: string | null = null;
+  let insertFailure: Error | null = null;
+  try {
+    const inserted = await client.from("status_posts").insert({
+      user_id: userId,
+      audience: draft.audience,
+      status_type: draft.status_type,
+      text_content: text,
+      media_path: mediaPath,
+      metadata: draft.metadata || {},
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    }).select("id").single();
+    if (inserted.error) insertFailure = new Error(inserted.error.message);
+    else if (!inserted.data || typeof inserted.data.id !== "string") insertFailure = new Error("The Stories service returned an invalid publish confirmation.");
+    else publishedStatusId = inserted.data.id;
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Couldn’t confirm whether the Story was saved.";
+    if (!mediaPath) return { data: null as MtuStatus | null, persisted: false, error: new Error(message) };
+    let confirmed: { data: { id: string } | null; error: { message: string } | null };
+    try {
+      confirmed = await client.from("status_posts").select("id").eq("media_path", mediaPath).maybeSingle();
+    } catch {
+      return { data: null as MtuStatus | null, persisted: false, error: new Error(`${message} The save state is uncertain; uploaded media was retained to avoid breaking a published Story.`) };
+    }
+    if (confirmed.error) {
+      return { data: null as MtuStatus | null, persisted: false, error: new Error(`${message} The save state is uncertain; uploaded media was retained to avoid breaking a published Story.`) };
+    }
+    if (confirmed.data) {
+      publishedStatusId = confirmed.data.id;
+    } else {
+      const cleanup = await cleanupMtuStatusUpload(client, mediaPath);
+      return { data: null as MtuStatus | null, persisted: false, error: new Error(cleanup ? `${message} Media cleanup also failed: ${cleanup.message}` : message) };
+    }
+  }
+  if (insertFailure) {
+    if (mediaPath) {
+      let confirmed: { data: { id: string } | null; error: { message: string } | null };
+      try {
+        confirmed = await client.from("status_posts").select("id").eq("media_path", mediaPath).maybeSingle();
+      } catch {
+        return { data: null as MtuStatus | null, persisted: false, error: new Error(`${insertFailure.message} The save state is uncertain; uploaded media was retained to avoid breaking a published Story.`) };
+      }
+      if (confirmed.error) {
+        return { data: null as MtuStatus | null, persisted: false, error: new Error(`${insertFailure.message} The save state is uncertain; uploaded media was retained to avoid breaking a published Story.`) };
+      }
+      if (confirmed.data) {
+        publishedStatusId = confirmed.data.id;
+      } else {
+        const cleanup = await cleanupMtuStatusUpload(client, mediaPath);
+        if (cleanup) return { data: null as MtuStatus | null, persisted: false, error: new Error(`${insertFailure.message} Media cleanup also failed: ${cleanup.message}`) };
+      }
+    }
+    if (!publishedStatusId) return { data: null as MtuStatus | null, persisted: false, error: insertFailure };
+  }
+
+  let refreshed: Awaited<ReturnType<typeof listMtuStatuses>>;
+  try {
+    refreshed = await listMtuStatuses(client, draft.audience);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Your Story was published, but its preview could not refresh.";
+    return { data: null as MtuStatus | null, persisted: true, error: new Error(`Your Story was published, but its preview could not refresh. ${message}`) };
+  }
+  if (refreshed.error) return { data: null as MtuStatus | null, persisted: true, error: new Error("Your Story was published, but its preview could not refresh.") };
+  return {
+    data: refreshed.data.find((status) => status.status_id === publishedStatusId) || null,
+    persisted: true,
+    error: refreshed.data.some((status) => status.status_id === publishedStatusId)
+      ? null
+      : new Error("Your Story was published, but its preview could not load."),
+  };
 }
 
 export async function deleteMtuStatus(client: Pick<SupabaseClient, "from" | "storage">, statusId: string) {
-  const found = await client.from("status_posts").select("media_path").eq("id", statusId).maybeSingle();
+  let found: { data: { media_path: string | null } | null; error: { message: string } | null };
+  try {
+    found = await client.from("status_posts").select("media_path").eq("id", statusId).maybeSingle();
+  } catch (caught) {
+    return { data: false, error: caught instanceof Error ? caught : new Error("Couldn’t check whether this Story is still available.") };
+  }
   if (found.error) return { data: false, error: found.error };
   if (!found.data) return { data: false, error: new Error("This Status is no longer available.") };
-  const removed = await client.from("status_posts").delete().eq("id", statusId);
-  if (removed.error) return { data: false, error: removed.error };
-  if (found.data.media_path) {
-    const cleanup = await client.storage.from("status-media").remove([found.data.media_path]);
-    if (cleanup.error) return { data: true, error: cleanup.error };
+  let removalError: Error | null = null;
+  try {
+    const removed = await client.from("status_posts").delete().eq("id", statusId);
+    if (removed.error) removalError = new Error(removed.error.message);
+  } catch (caught) {
+    removalError = caught instanceof Error ? caught : new Error("Couldn’t confirm Story deletion.");
   }
-  return { data: true, error: null };
+  if (removalError) {
+    let confirmed: { data: { id: string } | null; error: { message: string } | null };
+    try {
+      confirmed = await client.from("status_posts").select("id").eq("id", statusId).maybeSingle();
+    } catch {
+      return { data: false, error: new Error(`${removalError.message} The delete state is uncertain; the media was retained.`) };
+    }
+    if (confirmed.error) return { data: false, error: new Error(`${removalError.message} The delete state is uncertain; the media was retained.`) };
+    if (confirmed.data) return { data: false, error: removalError };
+  }
+  if (found.data.media_path) {
+    const cleanup = await cleanupMtuStatusUpload(client, found.data.media_path);
+    if (cleanup) return { data: true, error: removalError ? new Error(`${removalError.message} Story deleted; media cleanup failed: ${cleanup.message}`) : cleanup };
+  }
+  return { data: true, error: removalError };
 }
 
 export async function recordMtuStatusView(client: Pick<SupabaseClient, "from">, statusId: string, viewerId: string) {
@@ -535,7 +854,7 @@ export async function recordMtuStatusView(client: Pick<SupabaseClient, "from">, 
 }
 
 export function subscribeToMtuStatuses(client: Pick<SupabaseClient, "channel" | "removeChannel">, onChange: () => void) {
-  const channel = client.channel("convo-status-updates")
+  const channel = client.channel(`convo-status-updates-${crypto.randomUUID()}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "status_posts" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "status_views" }, onChange)
     .subscribe();
@@ -818,8 +1137,8 @@ export async function markMtuConversationRead(client: Pick<SupabaseClient, "rpc"
 
 export type MtuNotification = {
   id: string;
-  recipient_id: string;
-  notification_type: "message" | "connection" | "group" | "call" | "poll" | "task" | "event" | "announcement";
+  recipient_id?: string;
+  notification_type: "message" | "connection" | "group" | "call" | "poll" | "task" | "event" | "announcement" | "follow";
   title: string;
   body: string;
   conversation_id: string | null;
@@ -827,11 +1146,55 @@ export type MtuNotification = {
   payload: Record<string, unknown>;
   created_at: string;
   read_at: string | null;
+  actor_id?: string | null;
+  actor_name?: string;
+  actor_avatar_url?: string | null;
 };
 
 export async function listMtuNotifications(client: Pick<SupabaseClient, "from">, limit = 100) {
   const result = await client.from("mtu_notifications").select("*").is("read_at", null).order("created_at", { ascending: false }).limit(limit);
   return { data: (result.data || []) as MtuNotification[], error: result.error };
+}
+
+export type MtuFollowNotification = {
+  id: string;
+  actor_id: string;
+  actor_name: string;
+  actor_avatar_url: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+
+export async function listMtuFollowNotifications(client: Pick<SupabaseClient, "rpc">, limit = 50) {
+  const { data, error } = await client.rpc("list_mtu_follow_notifications", { p_limit: limit });
+  if (error) return { data: [] as MtuFollowNotification[], error };
+  if (!Array.isArray(data)) return { data: [] as MtuFollowNotification[], error: new Error("The follow notifications service returned an invalid response.") };
+  const notifications: MtuFollowNotification[] = [];
+  for (const row of data as unknown[]) {
+    if (typeof row !== "object" || row === null) {
+      return { data: [] as MtuFollowNotification[], error: new Error("The follow notifications service returned an invalid response.") };
+    }
+    const value = row as Record<string, unknown>;
+    if (
+      typeof value.id !== "string"
+      || typeof value.actor_id !== "string"
+      || typeof value.actor_name !== "string"
+      || typeof value.created_at !== "string"
+      || !(typeof value.actor_avatar_url === "string" || value.actor_avatar_url === null)
+      || !(typeof value.read_at === "string" || value.read_at === null)
+    ) {
+      return { data: [] as MtuFollowNotification[], error: new Error("The follow notifications service returned an invalid response.") };
+    }
+    notifications.push({
+      id: value.id,
+      actor_id: value.actor_id,
+      actor_name: value.actor_name,
+      actor_avatar_url: value.actor_avatar_url,
+      created_at: value.created_at,
+      read_at: value.read_at,
+    });
+  }
+  return { data: notifications, error: null };
 }
 
 export async function markMtuNotificationRead(client: Pick<SupabaseClient, "from">, notificationId: string) {
@@ -845,13 +1208,18 @@ export async function clearMtuNotifications(client: Pick<SupabaseClient, "from">
 }
 
 export function subscribeToMtuNotifications(client: Pick<SupabaseClient, "channel" | "removeChannel">, recipientId: string, onNotification: (notification: Record<string, unknown>) => void) {
-  const channel = client.channel(`convo-notifications-${recipientId}`)
+  let hasConnected = false;
+  const channel = client.channel(`convo-notifications-${recipientId}-${crypto.randomUUID()}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "mtu_notifications", filter: `recipient_id=eq.${recipientId}` }, (payload) => {
       const change = payload as { eventType?: string; new?: Record<string, unknown>; old?: Record<string, unknown> };
       const row = change.eventType === "DELETE" ? change.old : change.new;
       if (row) onNotification({ ...row, __deleted: change.eventType === "DELETE" });
     })
-    .subscribe();
+    .subscribe((status) => {
+      if (status !== "SUBSCRIBED") return;
+      if (hasConnected) onNotification({ __resync: true });
+      hasConnected = true;
+    });
   return () => { void client.removeChannel(channel); };
 }
 

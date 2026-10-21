@@ -1,16 +1,43 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 import { getCampusPanelState, joinCampusGroup } from "./campus-data";
 import { CONVO_ONBOARDING_SEQUENCE, saveMtuProfile, createMtuGroupConversation, createMtuGroupInvite, createMtuGroupPoll, createMtuGroupTask, deleteMtuMessage, editMtuMessage, getMtuConversationNotificationPreference, getMtuPrivacySettings, getMtuGroupPermissions, getProfileMetadata, joinMtuGroupInvite, listMtuGroupPolls, listMtuGroupTasks, listMtuSavedMessages, markMtuConversationRead, rotateMtuGroupInvite, searchMtuConversationMessages, sendMtuMessage, setMtuConversationNotificationPreference, setMtuConversationRailState, setMtuPrivacySettings, setMtuGroupPermissions, setMtuGroupTaskCompleted, createMtuGroupEvent, listMtuGroupEvents, setMtuGroupEventResponse, createMtuGroupNote, updateMtuGroupNote, listMtuGroupNotes, createMtuGroupAnnouncement, listMtuGroupAnnouncements, getMtuConversationAppearance, setMtuConversationAppearance, removeConversationAppearanceImage, startMtuDirectConversation, subscribeToMtuAllMessages, subscribeToMtuConversation, subscribeToMtuMessages, syncMyMtuDirectoryProfile, uploadAvatar, uploadMessageImage, validateAvatarFile, validateMessageAttachment, validateMessageImage, castMtuGroupPollVote, revokeMtuGroupInvite, clearMtuNotifications, listMtuNotifications, uploadConversationAppearanceImage, validateConversationAppearanceImage } from "./supabase";
 import { isMtuEmail } from "./supabase";
 import { listMtuBlockedStudents, unblockMtuStudent } from "./supabase";
 import { listMtuApprovedPeople, normalizeProfileVisibility, setMtuApprovedPerson } from "./supabase";
-import { listMtuStatuses, recordMtuStatusView, subscribeToMtuStatuses, validateMtuStatusMedia } from "./supabase";
+import {
+  getMtuStudentFollowListVisibility,
+  listMtuStudentContentRestrictions,
+  listMtuStudentFollowState,
+  listMtuStudentFollows,
+  listMtuStudentFollowsFor,
+  removeMtuStudentFollower,
+  setMtuStudentContentRestriction,
+  setMtuStudentFollow,
+  setMtuStudentFollowListVisibility,
+} from "./supabase";
+import { listMtuStatuses, publishMtuStatus, recordMtuStatusView, subscribeToMtuNotifications, subscribeToMtuStatuses, validateMtuStatusMedia } from "./supabase";
 
 describe("Supabase auth persistence", () => {
   it("persists the session without storing a password", async () => {
     const { SUPABASE_AUTH_OPTIONS } = await import("./supabase");
     expect(SUPABASE_AUTH_OPTIONS).toMatchObject({ persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "convo-auth" });
     expect(SUPABASE_AUTH_OPTIONS).not.toHaveProperty("password");
+  });
+
+  it("enforces the public and connection Story audiences in the forward migration", async () => {
+    const migration = await readFile(
+      new URL("../../../supabase/migrations/20261034000000_statuses_public_and_connections.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("check (audience in ('public', 'connections'))");
+    expect(migration).toContain("audience in ('public', 'connections')");
+    expect(migration).toContain("public.mtu_status_user_unblocked(user_id)");
+    expect(migration).toContain("public.mtu_status_pair_allowed(user_id)");
+    expect(migration).toContain("public.mtu_status_pair_allowed(post.user_id)");
+    expect(migration).toContain("viewer_id = auth.uid()");
+    expect(migration).toContain("expires_at > now()");
+    expect(migration).toContain("grant execute on function public.list_mtu_statuses_for(text) to authenticated");
   });
 });
 
@@ -25,6 +52,133 @@ describe("isMtuEmail", () => {
     expect(isMtuEmail("student@gmail.com")).toBe(false);
     expect(isMtuEmail("student@mtu.edu")).toBe(false);
     expect(isMtuEmail("student mtu.edu.ng")).toBe(false);
+  });
+});
+
+describe("student following", () => {
+  it("loads validated follow counts and calls the independent follow RPC", async () => {
+    const rpc = vi.fn(async (name: string) => {
+      if (name === "list_mtu_student_follow_state") {
+        return { data: [{ student_id: "student-2", follower_count: 3, following_count: 7, followed_by_me: true }], error: null };
+      }
+      return { data: true, error: null };
+    });
+    const client = { rpc } as never;
+
+    await expect(listMtuStudentFollowState(client, ["student-2"])).resolves.toEqual({
+      data: [{ student_id: "student-2", follower_count: 3, following_count: 7, followed_by_me: true }],
+      error: null,
+    });
+    await expect(setMtuStudentFollow(client, "student-2", false)).resolves.toEqual({ data: true, error: null });
+    expect(rpc).toHaveBeenNthCalledWith(1, "list_mtu_student_follow_state", { p_student_ids: ["student-2"] });
+    expect(rpc).toHaveBeenNthCalledWith(2, "set_mtu_student_follow", { p_student_id: "student-2", p_following: false });
+  });
+
+  it("loads the privacy-filtered following list", async () => {
+    const rpc = vi.fn(async () => ({
+      data: [{
+        id: "student-2",
+        display_name: "Mariam",
+        student_id: "MTU-26-7K4Q2",
+        level: "300L",
+        department: "CBAS",
+        programme: "Computer Science",
+        avatar_url: null,
+        bio: null,
+        status_text: "Available",
+        follower_count: 3,
+        following_count: 7,
+      }],
+      error: null,
+    }));
+    await expect(listMtuStudentFollows({ rpc } as never)).resolves.toMatchObject({
+      data: [{ id: "student-2", display_name: "Mariam", follower_count: 3, following_count: 7 }],
+      error: null,
+    });
+    expect(rpc).toHaveBeenCalledWith("list_mtu_student_follows", { p_direction: "following" });
+  });
+
+  it("loads a profile's visible follower list and saves independent privacy choices", async () => {
+    const rpc = vi.fn(async (name: string) => {
+      if (name === "get_mtu_student_follow_list_visibility") {
+        return { data: [{ followers_visibility: "followers", following_visibility: "private" }], error: null };
+      }
+      if (name === "list_mtu_student_follows_for") {
+        return { data: [{ id: "student-3", display_name: "Ada", follower_count: 4, following_count: 2 }], error: null };
+      }
+      return { data: true, error: null };
+    });
+    const client = { rpc } as never;
+    await expect(getMtuStudentFollowListVisibility(client)).resolves.toEqual({
+      data: { followers_visibility: "followers", following_visibility: "private" },
+      error: null,
+    });
+    await expect(listMtuStudentFollowsFor(client, "profile-1", "followers")).resolves.toMatchObject({
+      data: [{ id: "student-3", display_name: "Ada", follower_count: 4 }],
+      error: null,
+    });
+    await expect(setMtuStudentFollowListVisibility(client, { followers_visibility: "public", following_visibility: "private" })).resolves.toEqual({ data: true, error: null });
+    await expect(removeMtuStudentFollower(client, "follower-1")).resolves.toEqual({ data: true, error: null });
+    await expect(setMtuStudentContentRestriction(client, "student-2", true)).resolves.toEqual({ data: true, error: null });
+    expect(rpc).toHaveBeenCalledWith("list_mtu_student_follows_for", { p_profile_id: "profile-1", p_direction: "followers" });
+    expect(rpc).toHaveBeenCalledWith("set_mtu_student_follow_list_visibility", { p_followers_visibility: "public", p_following_visibility: "private" });
+    expect(rpc).toHaveBeenCalledWith("remove_mtu_student_follower", { p_follower_id: "follower-1" });
+    expect(rpc).toHaveBeenCalledWith("set_mtu_student_content_restriction", { p_student_id: "student-2", p_restricted: true });
+  });
+
+  it("validates the owner-only content restriction list", async () => {
+    const client = { rpc: vi.fn(async () => ({
+      data: [{ user_id: "student-2", display_name: "Mariam", avatar_url: null, created_at: "2026-10-21T10:00:00.000Z" }],
+      error: null,
+    })) } as never;
+    await expect(listMtuStudentContentRestrictions(client)).resolves.toEqual({
+      data: [{ user_id: "student-2", display_name: "Mariam", avatar_url: null, created_at: "2026-10-21T10:00:00.000Z" }],
+      error: null,
+    });
+  });
+
+  it("rejects malformed follow-state responses", async () => {
+    const client = { rpc: vi.fn(async () => ({ data: [{ student_id: "student-2", follower_count: "many", following_count: 1, followed_by_me: false }], error: null })) } as never;
+    const result = await listMtuStudentFollowState(client, ["student-2"]);
+    expect(result.data).toEqual([]);
+    expect(result.error).toBeInstanceOf(Error);
+  });
+
+  it("documents the database-enforced, connection-independent follow policies", async () => {
+    const migration = await readFile(
+      new URL("../../../supabase/migrations/20261035000000_campus_social_interactions.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("primary key (follower_id, followed_id)");
+    expect(migration).toContain("public.student_blocks");
+    expect(migration).toContain("p_following is null");
+    expect(migration).toContain("grant execute on function public.set_mtu_student_follow(uuid, boolean) to authenticated");
+    expect(migration).toContain("grant execute on function public.list_mtu_student_follows(text) to authenticated");
+    expect(migration).toContain("public.mtu_campus_post_is_visible(p_post_id)");
+    expect(migration).toContain("unique (user_id, post_id)");
+  });
+
+  it("documents server-enforced list privacy and independent Feed/Public Story restrictions", async () => {
+    const migration = await readFile(
+      new URL("../../../supabase/migrations/20261036000000_student_social_privacy_and_restrictions.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("followers_visibility text not null default 'private'");
+    expect(migration).toContain("list_mtu_student_follows_for");
+    expect(migration).toContain("follower_privacy.followers_visibility");
+    expect(migration).toContain("following_privacy.following_visibility");
+    expect(migration).toContain("listed_profile_privacy.followers_visibility");
+    expect(migration).toContain("listed_profile_privacy.following_visibility");
+    expect(migration).toContain("create or replace function public.list_mtu_student_follow_state(p_student_ids uuid[])");
+    expect(migration).toContain("grant execute on function public.list_mtu_student_follow_state(uuid[]) to authenticated");
+    expect(migration).toContain("public.mtu_student_content_visible(post.author_id)");
+    expect(migration).toContain("post.expires_at > now()");
+    expect(migration).toContain("public.mtu_status_pair_allowed(post.user_id)");
+    expect(migration).toContain("block.blocked_id = status_views.viewer_id");
+    expect(migration).toContain("block.blocked_id = view_row.viewer_id");
+    expect(migration).toContain("revoke update on public.status_posts from authenticated");
+    expect(migration).toContain("create trigger prevent_mtu_status_audience_change");
+    expect(migration).toContain("public.can_read_mtu_campus_post_media(name)");
   });
 });
 
@@ -76,6 +230,43 @@ describe("notification cleanup", () => {
       ["mtu_notifications", "id", "is", null],
     ]);
   });
+
+  it("has a migration that deduplicates entity notifications and only grants read-state updates", async () => {
+    const migration = await readFile(
+      new URL("../../../supabase/migrations/20261029000000_notification_read_privileges.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain("grant update (read_at) on public.mtu_notifications to authenticated");
+    expect(migration).toContain("revoke insert on public.mtu_notifications");
+    expect(migration).toContain("pg_advisory_xact_lock");
+    expect(migration).toContain("notification.entity_id = new.entity_id");
+    expect(migration).toContain("return null");
+  });
+
+  it("requests a resync after a realtime reconnection and removes its channel on cleanup", () => {
+    const notifications: Record<string, unknown>[] = [];
+    const removed: unknown[] = [];
+    let subscriptionStatus: ((status: string) => void) | undefined;
+    const channel = {
+      on: () => channel,
+      subscribe: (callback: (status: string) => void) => {
+        subscriptionStatus = callback;
+        return channel;
+      },
+    };
+    const client = {
+      channel: vi.fn(() => channel),
+      removeChannel: (value: unknown) => { removed.push(value); },
+    } as never;
+
+    const unsubscribe = subscribeToMtuNotifications(client, "student-1", (notification) => notifications.push(notification));
+    subscriptionStatus?.("SUBSCRIBED");
+    expect(notifications).toEqual([]);
+    subscriptionStatus?.("SUBSCRIBED");
+    expect(notifications).toEqual([{ __resync: true }]);
+    unsubscribe();
+    expect(removed).toEqual([channel]);
+  });
 });
 
 describe("MTU Status persistence helpers", () => {
@@ -87,9 +278,105 @@ describe("MTU Status persistence helpers", () => {
   });
 
   it("loads active text statuses without needing media signing", async () => {
-    const status = { status_id: "status-1", user_id: "student-1", status_type: "text", text_content: "Study group", media_path: null, metadata: {}, created_at: "2026-08-25T10:00:00.000Z", expires_at: "2026-08-26T10:00:00.000Z", display_name: "Ada", avatar_url: null, view_count: 1, viewed_by_me: false, viewers: [] };
-    const client = { rpc: async () => ({ data: [status], error: null }), storage: { from: () => { throw new Error("Text statuses do not require Storage."); } } } as never;
-    await expect(listMtuStatuses(client)).resolves.toMatchObject({ data: [{ ...status, media_url: null }], error: null });
+    const now = Date.now();
+    const status = { status_id: "status-1", user_id: "student-1", audience: "connections", status_type: "text", text_content: "Study group", media_path: null, metadata: {}, created_at: new Date(now).toISOString(), expires_at: new Date(now + 60 * 60 * 1000).toISOString(), display_name: "Ada", avatar_url: null, view_count: 1, viewed_by_me: false, viewers: [] };
+    const rpc = vi.fn(async () => ({ data: [status], error: null }));
+    const client = { rpc, storage: { from: () => { throw new Error("Text statuses do not require Storage."); } } } as never;
+    await expect(listMtuStatuses(client, "connections")).resolves.toMatchObject({ data: [{ ...status, media_url: null }], error: null });
+    expect(rpc).toHaveBeenCalledWith("list_mtu_statuses_for", { p_audience: "connections" });
+  });
+
+  it("rejects a malformed Stories RPC response with a migration-oriented error", async () => {
+    const client = {
+      rpc: vi.fn(async () => ({ data: [{ status_id: "status-1" }], error: null })),
+      storage: { from: vi.fn() },
+    } as never;
+
+    await expect(listMtuStatuses(client, "connections")).resolves.toMatchObject({
+      data: [],
+      error: { message: expect.stringContaining("invalid response") },
+    });
+  });
+
+  it("loads public Stories without requiring a connection audience fallback", async () => {
+    const now = Date.now();
+    const status = { status_id: "status-public", user_id: "student-2", audience: "public", status_type: "text", text_content: "Campus update", media_path: null, metadata: {}, created_at: new Date(now).toISOString(), expires_at: new Date(now + 60 * 60 * 1000).toISOString(), display_name: "Grace", avatar_url: null, view_count: 0, viewed_by_me: false, viewers: [] };
+    const rpc = vi.fn(async () => ({ data: [status], error: null }));
+    const client = { rpc, storage: { from: vi.fn() } } as never;
+    await expect(listMtuStatuses(client, "public")).resolves.toMatchObject({
+      data: [{ ...status, media_url: null }],
+      error: null,
+    });
+    expect(rpc).toHaveBeenCalledWith("list_mtu_statuses_for", { p_audience: "public" });
+  });
+
+  it("caps signed Story media URLs at 60 seconds and caps them again at expiry", async () => {
+    const now = Date.now();
+    const status = { status_id: "status-public-media", user_id: "student-2", audience: "public", status_type: "image", text_content: "", media_path: "student-2/story.webp", metadata: {}, created_at: new Date(now).toISOString(), expires_at: new Date(now + 60 * 60 * 1000).toISOString(), display_name: "Grace", avatar_url: null, view_count: 0, viewed_by_me: false, viewers: [] };
+    const createSignedUrl = vi.fn(async () => ({ data: { signedUrl: "https://storage.example.test/public-story" }, error: null }));
+    const client = { rpc: async () => ({ data: [status], error: null }), storage: { from: () => ({ createSignedUrl }) } } as never;
+
+    await expect(listMtuStatuses(client, "public")).resolves.toMatchObject({
+      data: [{ media_url: "https://storage.example.test/public-story" }],
+      error: null,
+    });
+    expect(createSignedUrl).toHaveBeenCalledWith(status.media_path, 60);
+  });
+
+  it("rejects text Stories that include media before uploading", async () => {
+    const upload = vi.fn();
+    const client = { from: vi.fn(), rpc: vi.fn(), storage: { from: () => ({ upload }) } } as never;
+    const result = await publishMtuStatus(client, "student-1", {
+      audience: "connections",
+      status_type: "text",
+      text_content: "A text Story",
+      media: new File(["image"], "story.png", { type: "image/png" }),
+    });
+
+    expect(result.error?.message).toContain("cannot include");
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("cleans unclaimed Story media after a failed insert", async () => {
+    const file = new File(["image"], "story.png", { type: "image/png" });
+    const remove = vi.fn(async () => ({ error: null }));
+    const from = vi.fn(() => ({
+      insert: () => ({ select: () => ({ single: async () => ({ data: null, error: { message: "insert rejected" } }) }) }),
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+    }));
+    const client = {
+      from,
+      rpc: vi.fn(),
+      storage: { from: vi.fn(() => ({ upload: async () => ({ error: null }), remove })) },
+    } as never;
+
+    const result = await publishMtuStatus(client, "student-1", {
+      audience: "connections",
+      status_type: "image",
+      text_content: "",
+      media: file,
+    });
+
+    expect(result.persisted).toBe(false);
+    expect(result.error?.message).toBe("insert rejected");
+    expect(remove).toHaveBeenCalledWith([expect.stringMatching(/^student-1\//)]);
+  });
+
+  it("limits Story media links to one minute and never past Story expiry", async () => {
+    const now = Date.now();
+    const status = { status_id: "status-2", user_id: "student-1", audience: "connections", status_type: "image", text_content: "", media_path: "student-1/story.jpg", metadata: {}, created_at: new Date(now).toISOString(), expires_at: new Date(now + 10 * 60 * 1000).toISOString(), display_name: "Ada", avatar_url: null, view_count: 0, viewed_by_me: false, viewers: [] };
+    const createSignedUrl = vi.fn(async () => ({ data: { signedUrl: "https://storage.example.test/signed" }, error: null }));
+    const client = { rpc: async () => ({ data: [status], error: null }), storage: { from: () => ({ createSignedUrl }) } } as never;
+    await expect(listMtuStatuses(client, "connections")).resolves.toMatchObject({ data: [{ media_url: "https://storage.example.test/signed" }], error: null });
+    expect(createSignedUrl).toHaveBeenCalledWith(status.media_path, 60);
+  });
+
+  it("does not return expired statuses or create links for expired media", async () => {
+    const status = { status_id: "status-expired", user_id: "student-1", audience: "connections", status_type: "image", text_content: "", media_path: "student-1/expired.jpg", metadata: {}, created_at: "2026-08-25T10:00:00.000Z", expires_at: "2026-08-25T11:00:00.000Z", display_name: "Ada", avatar_url: null, view_count: 0, viewed_by_me: false, viewers: [] };
+    const createSignedUrl = vi.fn();
+    const client = { rpc: async () => ({ data: [status], error: null }), storage: { from: () => ({ createSignedUrl }) } } as never;
+    await expect(listMtuStatuses(client, "connections")).resolves.toEqual({ data: [], error: null });
+    expect(createSignedUrl).not.toHaveBeenCalled();
   });
 
   it("records a deduplicated viewer row and cleans up both realtime table subscriptions", async () => {

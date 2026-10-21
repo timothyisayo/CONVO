@@ -2073,6 +2073,8 @@ alter table public.conversation_member_preferences drop constraint if exists con
 alter table public.conversation_member_preferences add constraint conversation_member_preferences_chat_theme_check check(chat_theme in ('convo','cream','peach','sage','lavender','midnight'));
 alter table public.conversation_member_preferences drop constraint if exists conversation_member_preferences_wallpaper_variant_check;
 alter table public.conversation_member_preferences add constraint conversation_member_preferences_wallpaper_variant_check check(wallpaper_variant in ('plain','organic','campus','gradient'));
+drop function if exists public.get_mtu_conversation_appearance(uuid);
+drop function if exists public.set_mtu_conversation_appearance(uuid,text,text);
 create or replace function public.get_mtu_conversation_appearance(p_conversation_id uuid)
 returns table(chat_theme text,wallpaper_variant text) language sql security definer stable set search_path = pg_catalog, public, auth as $$
   select coalesce(pref.chat_theme,'convo'),coalesce(pref.wallpaper_variant,'plain') from (select 1) anchor
@@ -3729,13 +3731,25 @@ stable
 set search_path = pg_catalog, public, auth
 as $$
   select auth.uid() is not null
+    and p_owner_id is not null
     and public.is_mtu_account()
     and (
       p_owner_id = auth.uid()
-      or not exists (
-        select 1 from public.student_blocks block
-        where (block.blocker_id = auth.uid() and block.blocked_id = p_owner_id)
-           or (block.blocker_id = p_owner_id and block.blocked_id = auth.uid())
+      or (
+        exists (
+          select 1
+          from public.connection_requests accepted
+          where accepted.status = 'accepted'
+            and (
+              (accepted.requester_id = auth.uid() and accepted.recipient_id = p_owner_id)
+              or (accepted.requester_id = p_owner_id and accepted.recipient_id = auth.uid())
+            )
+        )
+        and not exists (
+          select 1 from public.student_blocks block
+          where (block.blocker_id = auth.uid() and block.blocked_id = p_owner_id)
+             or (block.blocker_id = p_owner_id and block.blocked_id = auth.uid())
+        )
       )
     );
 $$;
@@ -3776,7 +3790,10 @@ with check (
   public.is_mtu_account() and viewer_id = auth.uid()
   and exists (
     select 1 from public.status_posts post
-    where post.id = status_id and post.expires_at > now() and post.user_id <> auth.uid()
+    where post.id = status_id
+      and post.expires_at > now()
+      and post.user_id <> auth.uid()
+      and public.mtu_status_pair_allowed(post.user_id)
   )
 );
 
@@ -3791,7 +3808,12 @@ drop policy if exists "Students read active status media" on storage.objects;
 create policy "Students read active status media" on storage.objects for select to authenticated
 using (
   bucket_id = 'status-media' and public.is_mtu_account()
-  and exists (select 1 from public.status_posts post where post.media_path = storage.objects.name and post.expires_at > now())
+  and exists (
+    select 1 from public.status_posts post
+    where post.media_path = storage.objects.name
+      and post.expires_at > now()
+      and public.mtu_status_pair_allowed(post.user_id)
+  )
 );
 drop policy if exists "Students delete their own status media" on storage.objects;
 create policy "Students delete their own status media" on storage.objects for delete to authenticated
@@ -3838,3 +3860,1110 @@ begin
   end if;
 end
 $$;
+
+-- ===== CAMPUS HUB POST WORKFLOWS AND STUDENT MARKETPLACE =====
+create table if not exists public.campus_post_reactions (
+  post_id uuid not null references public.campus_posts(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+alter table public.campus_post_reactions enable row level security;
+drop policy if exists "Campus post reactions are private" on public.campus_post_reactions;
+create policy "Campus post reactions are private"
+  on public.campus_post_reactions for all to authenticated
+  using (false) with check (false);
+
+drop policy if exists "MTU users can read posts" on public.campus_posts;
+create policy "MTU users can read posts"
+  on public.campus_posts for select to authenticated
+  using (
+    public.is_mtu_account()
+    and not exists (
+      select 1 from public.student_blocks block
+      where (block.blocker_id = auth.uid() and block.blocked_id = author_id)
+         or (block.blocker_id = author_id and block.blocked_id = auth.uid())
+    )
+  );
+
+revoke update on public.campus_posts from authenticated;
+grant update (body) on public.campus_posts to authenticated;
+grant delete on public.campus_posts to authenticated;
+drop policy if exists "Authors can delete their own posts" on public.campus_posts;
+create policy "Authors can delete their own posts"
+  on public.campus_posts for delete to authenticated
+  using (public.is_mtu_account() and auth.uid() = author_id);
+
+create or replace function public.create_mtu_campus_post(p_body text, p_tone text default 'rose')
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  result_id uuid;
+  profile_name text;
+  profile_meta text;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to post';
+  end if;
+  if char_length(trim(coalesce(p_body, ''))) not between 1 and 2000 then
+    raise exception 'Posts must contain 1 to 2000 characters';
+  end if;
+
+  select coalesce(nullif(trim(display_name), ''), 'Convo member'),
+    coalesce(nullif(trim(concat_ws(' · ', programme, level)), ''), 'Convo community')
+  into profile_name, profile_meta
+  from public.profiles
+  where id = auth.uid();
+
+  insert into public.campus_posts (author_id, author_name, author_meta, body, tone)
+  values (auth.uid(), coalesce(profile_name, 'Convo member'), coalesce(profile_meta, 'Convo community'),
+    trim(p_body), case when p_tone in ('rose', 'sage', 'butter', 'apricot') then p_tone else 'rose' end)
+  returning id into result_id;
+  return result_id;
+end;
+$$;
+
+create or replace function public.update_mtu_campus_post(p_post_id uuid, p_body text)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to edit a post';
+  end if;
+  if char_length(trim(coalesce(p_body, ''))) not between 1 and 2000 then
+    raise exception 'Posts must contain 1 to 2000 characters';
+  end if;
+
+  update public.campus_posts
+  set body = trim(p_body)
+  where id = p_post_id and author_id = auth.uid();
+  return found;
+end;
+$$;
+
+create or replace function public.list_mtu_campus_post_reactions(p_post_ids uuid[] default null)
+returns table (post_id uuid)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select reaction.post_id
+  from public.campus_post_reactions reaction
+  join public.campus_posts post on post.id = reaction.post_id
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and reaction.user_id = auth.uid()
+    and (p_post_ids is null or reaction.post_id = any(p_post_ids))
+    and not exists (
+      select 1 from public.student_blocks block
+      where (block.blocker_id = auth.uid() and block.blocked_id = post.author_id)
+         or (block.blocker_id = post.author_id and block.blocked_id = auth.uid())
+    );
+$$;
+
+create or replace function public.toggle_mtu_campus_post_reaction(p_post_id uuid)
+returns table (liked boolean, like_count integer)
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  deleted_count integer;
+  inserted_count integer;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to react';
+  end if;
+  if not exists (
+    select 1 from public.campus_posts post
+    where post.id = p_post_id
+      and not exists (
+        select 1 from public.student_blocks block
+        where (block.blocker_id = auth.uid() and block.blocked_id = post.author_id)
+           or (block.blocker_id = post.author_id and block.blocked_id = auth.uid())
+      )
+  ) then
+    raise exception 'This post is unavailable';
+  end if;
+
+  delete from public.campus_post_reactions
+  where post_id = p_post_id and user_id = auth.uid();
+  get diagnostics deleted_count = row_count;
+  if deleted_count > 0 then
+    update public.campus_posts set likes = greatest(0, likes - 1) where id = p_post_id;
+    return query select false, post.likes from public.campus_posts post where post.id = p_post_id;
+    return;
+  end if;
+
+  insert into public.campus_post_reactions (post_id, user_id)
+  values (p_post_id, auth.uid())
+  on conflict (post_id, user_id) do nothing;
+  get diagnostics inserted_count = row_count;
+  if inserted_count > 0 then
+    update public.campus_posts set likes = likes + 1 where id = p_post_id;
+  end if;
+  return query select true, post.likes from public.campus_posts post where post.id = p_post_id;
+end;
+$$;
+
+revoke execute on function public.create_mtu_campus_post(text, text) from public, anon;
+revoke execute on function public.update_mtu_campus_post(uuid, text) from public, anon;
+revoke execute on function public.list_mtu_campus_post_reactions(uuid[]) from public, anon;
+revoke execute on function public.toggle_mtu_campus_post_reaction(uuid) from public, anon;
+grant execute on function public.create_mtu_campus_post(text, text) to authenticated;
+grant execute on function public.update_mtu_campus_post(uuid, text) to authenticated;
+grant execute on function public.list_mtu_campus_post_reactions(uuid[]) to authenticated;
+grant execute on function public.toggle_mtu_campus_post_reaction(uuid) to authenticated;
+
+create table if not exists public.marketplace_listings (
+  id uuid primary key default gen_random_uuid(),
+  seller_id uuid not null references auth.users(id) on delete cascade,
+  title text not null check (char_length(trim(title)) between 1 and 120),
+  description text not null default '' check (char_length(description) <= 3000),
+  category text not null default 'other'
+    check (category in ('books', 'electronics', 'supplies', 'services', 'other')),
+  item_condition text not null default 'good'
+    check (item_condition in ('new', 'like_new', 'good', 'fair', 'service')),
+  price numeric(12, 2) not null default 0 check (price >= 0),
+  currency text not null default 'NGN' check (currency = 'NGN'),
+  image_path text,
+  status text not null default 'active' check (status in ('active', 'sold', 'hidden')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (image_path is null or image_path like seller_id::text || '/%')
+);
+
+create index if not exists marketplace_listings_active_created_idx
+  on public.marketplace_listings (status, created_at desc);
+create index if not exists marketplace_listings_seller_created_idx
+  on public.marketplace_listings (seller_id, created_at desc);
+create index if not exists marketplace_listings_category_created_idx
+  on public.marketplace_listings (category, created_at desc);
+
+alter table public.marketplace_listings enable row level security;
+drop policy if exists "Eligible users can view available marketplace listings" on public.marketplace_listings;
+create policy "Eligible users can view available marketplace listings"
+  on public.marketplace_listings for select to authenticated
+  using (
+    public.is_mtu_account()
+    and (
+      seller_id = auth.uid()
+      or (
+        status = 'active'
+        and not exists (
+          select 1 from public.student_blocks block
+          where (block.blocker_id = auth.uid() and block.blocked_id = seller_id)
+             or (block.blocker_id = seller_id and block.blocked_id = auth.uid())
+        )
+      )
+    )
+  );
+drop policy if exists "Eligible users can create their own marketplace listings" on public.marketplace_listings;
+create policy "Eligible users can create their own marketplace listings"
+  on public.marketplace_listings for insert to authenticated
+  with check (public.is_mtu_account() and seller_id = auth.uid());
+drop policy if exists "Sellers can update their own marketplace listings" on public.marketplace_listings;
+create policy "Sellers can update their own marketplace listings"
+  on public.marketplace_listings for update to authenticated
+  using (public.is_mtu_account() and seller_id = auth.uid())
+  with check (public.is_mtu_account() and seller_id = auth.uid());
+drop policy if exists "Sellers can delete their own marketplace listings" on public.marketplace_listings;
+create policy "Sellers can delete their own marketplace listings"
+  on public.marketplace_listings for delete to authenticated
+  using (public.is_mtu_account() and seller_id = auth.uid());
+grant select, insert, update, delete on public.marketplace_listings to authenticated;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('marketplace-media', 'marketplace-media', false, 8388608, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update
+set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "Sellers upload their own marketplace images" on storage.objects;
+create policy "Sellers upload their own marketplace images"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'marketplace-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+drop policy if exists "Eligible users can read listed marketplace images" on storage.objects;
+create policy "Eligible users can read listed marketplace images"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'marketplace-media'
+    and public.is_mtu_account()
+    and exists (
+      select 1 from public.marketplace_listings listing
+      where listing.image_path = storage.objects.name
+        and (
+          listing.seller_id = auth.uid()
+          or (
+            listing.status = 'active'
+            and not exists (
+              select 1 from public.student_blocks block
+              where (block.blocker_id = auth.uid() and block.blocked_id = listing.seller_id)
+                 or (block.blocker_id = listing.seller_id and block.blocked_id = auth.uid())
+            )
+          )
+        )
+    )
+  );
+drop policy if exists "Sellers delete their own marketplace images" on storage.objects;
+create policy "Sellers delete their own marketplace images"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'marketplace-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create or replace function public.search_mtu_marketplace_listings(
+  p_query text default '',
+  p_category text default 'all'
+)
+returns setof public.marketplace_listings
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select listing.*
+  from public.marketplace_listings listing
+  where public.is_mtu_account()
+    and (
+      listing.seller_id = auth.uid()
+      or (
+        listing.status = 'active'
+        and not exists (
+          select 1 from public.student_blocks block
+          where (block.blocker_id = auth.uid() and block.blocked_id = listing.seller_id)
+             or (block.blocker_id = listing.seller_id and block.blocked_id = auth.uid())
+        )
+      )
+    )
+    and (listing.seller_id = auth.uid() or listing.status = 'active')
+    and (p_category = 'all' or listing.category = p_category)
+    and (
+      nullif(trim(coalesce(p_query, '')), '') is null
+      or listing.title ilike '%' || trim(p_query) || '%'
+      or listing.description ilike '%' || trim(p_query) || '%'
+    )
+  order by listing.created_at desc
+  limit 100;
+$$;
+revoke execute on function public.search_mtu_marketplace_listings(text, text) from public, anon;
+grant execute on function public.search_mtu_marketplace_listings(text, text) to authenticated;
+
+create or replace function public.touch_marketplace_listing_updated_at()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+drop trigger if exists marketplace_listings_touch_updated_at on public.marketplace_listings;
+create trigger marketplace_listings_touch_updated_at
+  before update on public.marketplace_listings
+  for each row execute function public.touch_marketplace_listing_updated_at();
+
+-- ===== MARKETPLACE NGN POLICY AND PRIVATE BLOCK-CHECK HARDENING =====
+do $$
+declare
+  usd_listings bigint;
+  housing_listings bigint;
+begin
+  select
+    count(*) filter (where currency <> 'NGN'),
+    count(*) filter (where category = 'housing')
+  into usd_listings, housing_listings
+  from public.marketplace_listings;
+
+  if usd_listings > 0 or housing_listings > 0 then
+    raise exception
+      'Marketplace migration stopped without changing data: % non-NGN listing(s), % Housing listing(s). Review these records before retrying.',
+      usd_listings, housing_listings
+      using errcode = '23514';
+  end if;
+end;
+$$;
+
+create or replace function public.mtu_campus_post_is_visible(p_post_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select auth.uid() is not null
+    and public.is_mtu_account()
+    and exists (
+      select 1
+      from public.campus_posts post
+      where post.id = p_post_id
+        and not exists (
+          select 1
+          from public.student_blocks block
+          where (block.blocker_id = auth.uid() and block.blocked_id = post.author_id)
+             or (block.blocker_id = post.author_id and block.blocked_id = auth.uid())
+        )
+    );
+$$;
+
+create or replace function public.mtu_marketplace_listing_is_visible(p_listing_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select auth.uid() is not null
+    and public.is_mtu_account()
+    and exists (
+      select 1
+      from public.marketplace_listings listing
+      where listing.id = p_listing_id
+        and (
+          listing.seller_id = auth.uid()
+          or (
+            listing.status = 'active'
+            and not exists (
+              select 1
+              from public.student_blocks block
+              where (block.blocker_id = auth.uid() and block.blocked_id = listing.seller_id)
+                 or (block.blocker_id = listing.seller_id and block.blocked_id = auth.uid())
+            )
+          )
+        )
+    );
+$$;
+
+create or replace function public.mtu_conversation_allows_message(p_conversation_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select auth.uid() is not null
+    and public.is_mtu_account()
+    and exists (
+      select 1
+      from public.conversations conversation
+      join public.conversation_members member
+        on member.conversation_id = conversation.id
+       and member.user_id = auth.uid()
+      where conversation.id = p_conversation_id
+        and (
+          conversation.kind <> 'direct'
+          or not exists (
+            select 1
+            from public.conversation_members other_member
+            join public.student_blocks block
+              on (block.blocker_id = auth.uid() and block.blocked_id = other_member.user_id)
+              or (block.blocker_id = other_member.user_id and block.blocked_id = auth.uid())
+            where other_member.conversation_id = conversation.id
+              and other_member.user_id <> auth.uid()
+          )
+        )
+    );
+$$;
+
+revoke all on function public.mtu_campus_post_is_visible(uuid) from public, anon;
+revoke all on function public.mtu_marketplace_listing_is_visible(uuid) from public, anon;
+revoke all on function public.mtu_conversation_allows_message(uuid) from public, anon;
+grant execute on function public.mtu_campus_post_is_visible(uuid) to authenticated;
+grant execute on function public.mtu_marketplace_listing_is_visible(uuid) to authenticated;
+grant execute on function public.mtu_conversation_allows_message(uuid) to authenticated;
+
+drop policy if exists "MTU users can read posts" on public.campus_posts;
+create policy "MTU users can read posts"
+  on public.campus_posts for select to authenticated
+  using (public.mtu_campus_post_is_visible(id));
+
+drop policy if exists "Eligible users can view available marketplace listings" on public.marketplace_listings;
+create policy "Eligible users can view available marketplace listings"
+  on public.marketplace_listings for select to authenticated
+  using (public.mtu_marketplace_listing_is_visible(id));
+
+drop policy if exists "Eligible users can read listed marketplace images" on storage.objects;
+create policy "Eligible users can read listed marketplace images"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'marketplace-media'
+    and public.is_mtu_account()
+    and exists (
+      select 1
+      from public.marketplace_listings listing
+      where listing.image_path = storage.objects.name
+        and public.mtu_marketplace_listing_is_visible(listing.id)
+    )
+  );
+
+drop policy if exists "Members can send messages" on public.messages;
+create policy "Members can send messages"
+  on public.messages for insert to authenticated
+  with check (
+    sender_id = auth.uid()
+    and public.mtu_conversation_allows_message(conversation_id)
+  );
+
+alter table public.marketplace_listings
+  drop constraint if exists marketplace_listings_category_check;
+alter table public.marketplace_listings
+  drop constraint if exists marketplace_listings_currency_check;
+alter table public.marketplace_listings
+  add constraint marketplace_listings_category_check
+    check (category in ('books', 'electronics', 'supplies', 'services', 'other'));
+alter table public.marketplace_listings
+  add constraint marketplace_listings_currency_check
+    check (currency = 'NGN');
+
+create or replace function public.list_mtu_campus_posts(p_query text default '')
+returns table (
+  id uuid,
+  author_id uuid,
+  author_name text,
+  author_meta text,
+  body text,
+  tone text,
+  created_at timestamptz,
+  likes integer,
+  author_avatar_url text
+)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select post.id, post.author_id,
+    coalesce(nullif(trim(profile.display_name), ''), post.author_name),
+    coalesce(nullif(trim(concat_ws(' · ', profile.programme, profile.level)), ''), post.author_meta),
+    post.body, post.tone, post.created_at, post.likes, profile.avatar_url
+  from public.campus_posts post
+  left join public.profiles profile on profile.id = post.author_id
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and public.mtu_campus_post_is_visible(post.id)
+    and (
+      nullif(trim(coalesce(p_query, '')), '') is null
+      or post.body ilike '%' || trim(p_query) || '%'
+      or coalesce(profile.display_name, post.author_name) ilike '%' || trim(p_query) || '%'
+      or coalesce(post.author_meta, '') ilike '%' || trim(p_query) || '%'
+    )
+  order by post.created_at desc
+  limit 100;
+$$;
+revoke execute on function public.list_mtu_campus_posts(text) from public, anon;
+grant execute on function public.list_mtu_campus_posts(text) to authenticated;
+
+create or replace function public.list_mtu_campus_posts_page(
+  p_query text default '',
+  p_before_created_at timestamptz default null,
+  p_before_id uuid default null,
+  p_limit integer default 21
+)
+returns table (
+  id uuid,
+  author_id uuid,
+  author_name text,
+  author_meta text,
+  body text,
+  tone text,
+  created_at timestamptz,
+  likes integer,
+  author_avatar_url text
+)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select post.id, post.author_id,
+    coalesce(nullif(trim(profile.display_name), ''), post.author_name),
+    coalesce(nullif(trim(concat_ws(' · ', profile.programme, profile.level)), ''), post.author_meta),
+    post.body, post.tone, post.created_at, post.likes, profile.avatar_url
+  from public.campus_posts post
+  left join public.profiles profile on profile.id = post.author_id
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and public.mtu_campus_post_is_visible(post.id)
+    and (
+      nullif(trim(coalesce(p_query, '')), '') is null
+      or post.body ilike '%' || trim(p_query) || '%'
+      or coalesce(profile.display_name, post.author_name) ilike '%' || trim(p_query) || '%'
+      or coalesce(post.author_meta, '') ilike '%' || trim(p_query) || '%'
+    )
+    and (
+      p_before_created_at is null
+      or (post.created_at, post.id) < (p_before_created_at, p_before_id)
+    )
+  order by post.created_at desc, post.id desc
+  limit greatest(1, least(coalesce(p_limit, 21), 51));
+$$;
+revoke execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) from public, anon;
+grant execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) to authenticated;
+
+create table if not exists public.campus_post_media (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.campus_posts(id) on delete cascade,
+  media_path text not null unique,
+  media_type text not null check (media_type in ('image', 'video')),
+  mime_type text not null check (mime_type in ('image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime')),
+  position smallint not null check (position between 0 and 9),
+  created_at timestamptz not null default now(),
+  unique (post_id, position)
+);
+create index if not exists campus_post_media_post_position_idx
+  on public.campus_post_media (post_id, position);
+alter table public.campus_post_media enable row level security;
+revoke all on public.campus_post_media from public, anon, authenticated;
+drop policy if exists "No direct access to campus post media metadata" on public.campus_post_media;
+create policy "No direct access to campus post media metadata"
+  on public.campus_post_media for all to authenticated
+  using (false) with check (false);
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('campus-post-media', 'campus-post-media', false, 52428800,
+  array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'])
+on conflict (id) do update
+set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+drop policy if exists "Eligible members upload their own campus post media" on storage.objects;
+create policy "Eligible members upload their own campus post media"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+drop policy if exists "Eligible members read visible campus post media" on storage.objects;
+create policy "Eligible members read visible campus post media"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and exists (
+      select 1 from public.campus_post_media media
+      where media.media_path = storage.objects.name
+        and public.mtu_campus_post_is_visible(media.post_id)
+    )
+  );
+drop policy if exists "Members delete their own unclaimed campus post media" on storage.objects;
+create policy "Members delete their own unclaimed campus post media"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create or replace function public.create_mtu_campus_post_with_media(p_body text, p_media jsonb default '[]'::jsonb)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  result_id uuid;
+  profile_name text;
+  profile_meta text;
+  media_item jsonb;
+  item_position integer := 0;
+  media_count integer;
+  video_count integer;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to post';
+  end if;
+  if jsonb_typeof(coalesce(p_media, '[]'::jsonb)) <> 'array' then
+    raise exception 'Post media must be a list of uploaded files';
+  end if;
+  media_count := jsonb_array_length(coalesce(p_media, '[]'::jsonb));
+  if media_count > 10 then raise exception 'A post can include up to 10 images or one video'; end if;
+  if char_length(trim(coalesce(p_body, ''))) > 2000
+     or (media_count = 0 and char_length(trim(coalesce(p_body, ''))) = 0) then
+    raise exception 'Add text or media to your post; captions must be 2000 characters or fewer';
+  end if;
+  select count(*) into video_count
+  from jsonb_array_elements(coalesce(p_media, '[]'::jsonb)) as media_rows(value)
+  where media_rows.value ->> 'media_type' = 'video';
+  if video_count > 0 and media_count <> 1 then
+    raise exception 'A video post can include only one video';
+  end if;
+
+  select coalesce(nullif(trim(display_name), ''), 'Convo member'),
+    coalesce(nullif(trim(concat_ws(' · ', programme, level)), ''), 'Convo community')
+  into profile_name, profile_meta
+  from public.profiles where id = auth.uid();
+  insert into public.campus_posts (author_id, author_name, author_meta, body, tone)
+  values (auth.uid(), coalesce(profile_name, 'Convo member'), coalesce(profile_meta, 'Convo community'),
+    coalesce(nullif(trim(p_body), ''), ' '), 'rose')
+  returning id into result_id;
+
+  for media_item in select value from jsonb_array_elements(coalesce(p_media, '[]'::jsonb))
+  loop
+    if media_item ->> 'media_type' not in ('image', 'video')
+       or media_item ->> 'mime_type' not in ('image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime')
+       or (media_item ->> 'media_type' = 'image' and media_item ->> 'mime_type' not like 'image/%')
+       or (media_item ->> 'media_type' = 'video' and media_item ->> 'mime_type' not like 'video/%') then
+      raise exception 'Unsupported post media type';
+    end if;
+    if coalesce(media_item ->> 'media_path', '') not like auth.uid()::text || '/%'
+       or not exists (
+         select 1 from storage.objects object
+         where object.bucket_id = 'campus-post-media'
+           and object.name = media_item ->> 'media_path'
+       ) then
+      raise exception 'Post media must be uploaded to your private Convo media folder first';
+    end if;
+    insert into public.campus_post_media (post_id, media_path, media_type, mime_type, position)
+    values (result_id, media_item ->> 'media_path', media_item ->> 'media_type', media_item ->> 'mime_type', item_position);
+    item_position := item_position + 1;
+  end loop;
+  return result_id;
+end;
+$$;
+revoke execute on function public.create_mtu_campus_post_with_media(text, jsonb) from public, anon;
+grant execute on function public.create_mtu_campus_post_with_media(text, jsonb) to authenticated;
+
+drop function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer);
+create function public.list_mtu_campus_posts_page(
+  p_query text default '',
+  p_before_created_at timestamptz default null,
+  p_before_id uuid default null,
+  p_limit integer default 21
+)
+returns table (
+  id uuid,
+  author_id uuid,
+  author_name text,
+  author_meta text,
+  body text,
+  tone text,
+  created_at timestamptz,
+  likes integer,
+  author_avatar_url text,
+  media jsonb
+)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select post.id, post.author_id,
+    coalesce(nullif(trim(profile.display_name), ''), post.author_name),
+    coalesce(nullif(trim(concat_ws(' · ', profile.programme, profile.level)), ''), post.author_meta),
+    post.body, post.tone, post.created_at, post.likes, profile.avatar_url,
+    coalesce(media.items, '[]'::jsonb)
+  from public.campus_posts post
+  left join public.profiles profile on profile.id = post.author_id
+  left join lateral (
+    select jsonb_agg(jsonb_build_object(
+      'media_path', item.media_path, 'media_type', item.media_type,
+      'mime_type', item.mime_type, 'position', item.position
+    ) order by item.position) as items
+    from public.campus_post_media item where item.post_id = post.id
+  ) media on true
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and public.mtu_campus_post_is_visible(post.id)
+    and (
+      nullif(trim(coalesce(p_query, '')), '') is null
+      or post.body ilike '%' || trim(p_query) || '%'
+      or coalesce(profile.display_name, post.author_name) ilike '%' || trim(p_query) || '%'
+      or coalesce(post.author_meta, '') ilike '%' || trim(p_query) || '%'
+    )
+    and (p_before_created_at is null or (post.created_at, post.id) < (p_before_created_at, p_before_id))
+  order by post.created_at desc, post.id desc
+  limit greatest(1, least(coalesce(p_limit, 21), 51));
+$$;
+revoke execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) from public, anon;
+grant execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) to authenticated;
+
+create or replace function public.delete_mtu_campus_post(p_post_id uuid)
+returns text[]
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  media_paths text[];
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to delete a post';
+  end if;
+  select coalesce(array_agg(media.media_path), '{}'::text[]) into media_paths
+  from public.campus_post_media media
+  join public.campus_posts post on post.id = media.post_id
+  where post.id = p_post_id and post.author_id = auth.uid();
+  delete from public.campus_posts where id = p_post_id and author_id = auth.uid();
+  if not found then raise exception 'You can only delete your own post'; end if;
+  return media_paths;
+end;
+$$;
+revoke execute on function public.delete_mtu_campus_post(uuid) from public, anon;
+grant execute on function public.delete_mtu_campus_post(uuid) to authenticated;
+
+alter table public.campus_posts
+  drop constraint if exists campus_posts_body_check;
+alter table public.campus_posts
+  add constraint campus_posts_body_check
+  check (char_length(trim(body)) <= 2000);
+
+create table if not exists public.campus_post_media (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.campus_posts(id) on delete cascade,
+  media_path text not null unique,
+  media_type text not null check (media_type in ('image', 'video')),
+  mime_type text not null check (mime_type in ('image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime')),
+  position smallint not null check (position between 0 and 9),
+  created_at timestamptz not null default now(),
+  unique (post_id, position)
+);
+create index if not exists campus_post_media_post_position_idx
+  on public.campus_post_media (post_id, position);
+alter table public.campus_post_media enable row level security;
+revoke all on public.campus_post_media from public, anon, authenticated;
+drop policy if exists "No direct access to campus post media metadata" on public.campus_post_media;
+create policy "No direct access to campus post media metadata"
+  on public.campus_post_media for all to authenticated
+  using (false) with check (false);
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('campus-post-media', 'campus-post-media', false, 52428800,
+  array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'])
+on conflict (id) do update
+set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+drop policy if exists "Eligible members upload their own campus post media" on storage.objects;
+create policy "Eligible members upload their own campus post media"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+drop policy if exists "Eligible members read visible campus post media" on storage.objects;
+create policy "Eligible members read visible campus post media"
+  on storage.objects for select to authenticated
+  using (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and exists (
+      select 1 from public.campus_post_media media
+      where media.media_path = storage.objects.name
+        and public.mtu_campus_post_is_visible(media.post_id)
+    )
+  );
+drop policy if exists "Members delete their own unclaimed campus post media" on storage.objects;
+create policy "Members delete their own unclaimed campus post media"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'campus-post-media'
+    and public.is_mtu_account()
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create or replace function public.create_mtu_campus_post_with_media(p_body text, p_media jsonb default '[]'::jsonb)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  result_id uuid;
+  profile_name text;
+  profile_meta text;
+  media_item jsonb;
+  item_position integer := 0;
+  media_count integer;
+  video_count integer;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to post';
+  end if;
+  if jsonb_typeof(coalesce(p_media, '[]'::jsonb)) <> 'array' then
+    raise exception 'Post media must be a list of uploaded files';
+  end if;
+  media_count := jsonb_array_length(coalesce(p_media, '[]'::jsonb));
+  if media_count > 10 then
+    raise exception 'A post can include up to 10 images or one video';
+  end if;
+  if char_length(trim(coalesce(p_body, ''))) > 2000
+     or (media_count = 0 and char_length(trim(coalesce(p_body, ''))) = 0) then
+    raise exception 'Add text or media to your post; captions must be 2000 characters or fewer';
+  end if;
+  select count(*) into video_count
+  from jsonb_array_elements(coalesce(p_media, '[]'::jsonb)) item
+  where item ->> 'media_type' = 'video';
+  if video_count > 0 and media_count <> 1 then
+    raise exception 'A video post can include only one video';
+  end if;
+
+  select coalesce(nullif(trim(display_name), ''), 'Convo member'),
+    coalesce(nullif(trim(concat_ws(' · ', programme, level)), ''), 'Convo community')
+  into profile_name, profile_meta
+  from public.profiles
+  where id = auth.uid();
+  insert into public.campus_posts (author_id, author_name, author_meta, body, tone)
+  values (auth.uid(), coalesce(profile_name, 'Convo member'), coalesce(profile_meta, 'Convo community'), trim(coalesce(p_body, '')), 'rose')
+  returning id into result_id;
+
+  for media_item in select value from jsonb_array_elements(coalesce(p_media, '[]'::jsonb))
+  loop
+    if media_item ->> 'media_type' not in ('image', 'video')
+       or media_item ->> 'mime_type' not in ('image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime')
+       or (media_item ->> 'media_type' = 'image' and media_item ->> 'mime_type' not like 'image/%')
+       or (media_item ->> 'media_type' = 'video' and media_item ->> 'mime_type' not like 'video/%') then
+      raise exception 'Unsupported post media type';
+    end if;
+    if coalesce(media_item ->> 'media_path', '') not like auth.uid()::text || '/%'
+       or not exists (
+         select 1 from storage.objects object
+         where object.bucket_id = 'campus-post-media'
+           and object.name = media_item ->> 'media_path'
+       ) then
+      raise exception 'Post media must be uploaded to your private Convo media folder first';
+    end if;
+    insert into public.campus_post_media (post_id, media_path, media_type, mime_type, position)
+    values (result_id, media_item ->> 'media_path', media_item ->> 'media_type', media_item ->> 'mime_type', item_position);
+    item_position := item_position + 1;
+  end loop;
+  return result_id;
+end;
+$$;
+revoke execute on function public.create_mtu_campus_post_with_media(text, jsonb) from public, anon;
+grant execute on function public.create_mtu_campus_post_with_media(text, jsonb) to authenticated;
+
+drop function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer);
+create function public.list_mtu_campus_posts_page(
+  p_query text default '',
+  p_before_created_at timestamptz default null,
+  p_before_id uuid default null,
+  p_limit integer default 21
+)
+returns table (
+  id uuid,
+  author_id uuid,
+  author_name text,
+  author_meta text,
+  body text,
+  tone text,
+  created_at timestamptz,
+  likes integer,
+  author_avatar_url text,
+  media jsonb
+)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select post.id, post.author_id,
+    coalesce(nullif(trim(profile.display_name), ''), post.author_name),
+    coalesce(nullif(trim(concat_ws(' · ', profile.programme, profile.level)), ''), post.author_meta),
+    post.body, post.tone, post.created_at, post.likes, profile.avatar_url,
+    coalesce(media.items, '[]'::jsonb)
+  from public.campus_posts post
+  left join public.profiles profile on profile.id = post.author_id
+  left join lateral (
+    select jsonb_agg(jsonb_build_object(
+      'media_path', item.media_path, 'media_type', item.media_type,
+      'mime_type', item.mime_type, 'position', item.position
+    ) order by item.position) as items
+    from public.campus_post_media item
+    where item.post_id = post.id
+  ) media on true
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and public.mtu_campus_post_is_visible(post.id)
+    and (
+      nullif(trim(coalesce(p_query, '')), '') is null
+      or post.body ilike '%' || trim(p_query) || '%'
+      or coalesce(profile.display_name, post.author_name) ilike '%' || trim(p_query) || '%'
+      or coalesce(post.author_meta, '') ilike '%' || trim(p_query) || '%'
+    )
+    and (p_before_created_at is null or (post.created_at, post.id) < (p_before_created_at, p_before_id))
+  order by post.created_at desc, post.id desc
+  limit greatest(1, least(coalesce(p_limit, 21), 51));
+$$;
+revoke execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) from public, anon;
+grant execute on function public.list_mtu_campus_posts_page(text, timestamptz, uuid, integer) to authenticated;
+
+create or replace function public.delete_mtu_campus_post(p_post_id uuid)
+returns text[]
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+  media_paths text[];
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to delete a post';
+  end if;
+  select coalesce(array_agg(media.media_path), '{}'::text[]) into media_paths
+  from public.campus_post_media media
+  join public.campus_posts post on post.id = media.post_id
+  where post.id = p_post_id and post.author_id = auth.uid();
+  delete from public.campus_posts where id = p_post_id and author_id = auth.uid();
+  if not found then raise exception 'You can only delete your own post'; end if;
+  return media_paths;
+end;
+$$;
+revoke execute on function public.delete_mtu_campus_post(uuid) from public, anon;
+grant execute on function public.delete_mtu_campus_post(uuid) to authenticated;
+
+create table if not exists public.campus_post_comments (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.campus_posts(id) on delete cascade,
+  author_id uuid not null references auth.users(id) on delete cascade,
+  body text not null check (char_length(trim(body)) between 1 and 1000),
+  created_at timestamptz not null default now()
+);
+create index if not exists campus_post_comments_post_created_idx
+  on public.campus_post_comments(post_id, created_at);
+alter table public.campus_post_comments enable row level security;
+revoke all on public.campus_post_comments from public, anon, authenticated;
+drop policy if exists "No direct campus post comment access" on public.campus_post_comments;
+create policy "No direct campus post comment access"
+  on public.campus_post_comments for all to authenticated
+  using (false) with check (false);
+
+create or replace function public.list_mtu_campus_post_comments(p_post_id uuid)
+returns table (
+  id uuid,
+  post_id uuid,
+  author_id uuid,
+  author_name text,
+  author_avatar_url text,
+  body text,
+  created_at timestamptz
+)
+language sql
+security definer
+stable
+set search_path = pg_catalog, public, auth
+as $$
+  select comment.id, comment.post_id, comment.author_id,
+    coalesce(nullif(trim(profile.display_name), ''), 'Convo member'),
+    profile.avatar_url, comment.body, comment.created_at
+  from public.campus_post_comments comment
+  join public.profiles profile on profile.id = comment.author_id
+  where auth.uid() is not null
+    and public.is_mtu_account()
+    and public.mtu_campus_post_is_visible(p_post_id)
+    and comment.post_id = p_post_id
+  order by comment.created_at asc;
+$$;
+
+create or replace function public.create_mtu_campus_post_comment(p_post_id uuid, p_body text)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare comment_id uuid;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to comment';
+  end if;
+  if char_length(trim(coalesce(p_body, ''))) not between 1 and 1000 then
+    raise exception 'Comments must contain 1 to 1000 characters';
+  end if;
+  if not public.mtu_campus_post_is_visible(p_post_id) then
+    raise exception 'This post is unavailable';
+  end if;
+  insert into public.campus_post_comments(post_id, author_id, body)
+  values (p_post_id, auth.uid(), trim(p_body))
+  returning id into comment_id;
+  return comment_id;
+end;
+$$;
+
+create or replace function public.delete_mtu_campus_post_comment(p_comment_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to delete a comment';
+  end if;
+  delete from public.campus_post_comments comment
+  where comment.id = p_comment_id
+    and comment.author_id = auth.uid()
+    and public.mtu_campus_post_is_visible(comment.post_id);
+  return found;
+end;
+$$;
+
+revoke execute on function public.list_mtu_campus_post_comments(uuid) from public, anon;
+revoke execute on function public.create_mtu_campus_post_comment(uuid, text) from public, anon;
+revoke execute on function public.delete_mtu_campus_post_comment(uuid) from public, anon;
+grant execute on function public.list_mtu_campus_post_comments(uuid) to authenticated;
+grant execute on function public.create_mtu_campus_post_comment(uuid, text) to authenticated;
+grant execute on function public.delete_mtu_campus_post_comment(uuid) to authenticated;
+
+create or replace function public.create_mtu_marketplace_listing(
+  p_title text,
+  p_description text,
+  p_category text,
+  p_condition text,
+  p_price numeric,
+  p_image_path text default null
+)
+returns public.marketplace_listings
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare result public.marketplace_listings;
+begin
+  if auth.uid() is null or not public.is_mtu_account() then
+    raise exception 'Sign in with an eligible Convo account to publish a listing';
+  end if;
+  if char_length(trim(coalesce(p_title, ''))) not between 1 and 120 then
+    raise exception 'Titles must contain 1 to 120 characters';
+  end if;
+  if char_length(coalesce(p_description, '')) > 3000 then
+    raise exception 'Descriptions must be 3,000 characters or fewer';
+  end if;
+  if p_category not in ('books', 'electronics', 'supplies', 'services', 'other') then
+    raise exception 'Choose a valid Marketplace category';
+  end if;
+  if p_condition not in ('new', 'like_new', 'good', 'fair', 'service') then
+    raise exception 'Choose a valid listing condition';
+  end if;
+  if p_price is null or p_price < 0 or p_price > 9999999999.99 then
+    raise exception 'Enter a valid non-negative NGN price';
+  end if;
+  if p_image_path is not null and p_image_path not like auth.uid()::text || '/%' then
+    raise exception 'Listing photo path must belong to the signed-in user';
+  end if;
+
+  insert into public.marketplace_listings(
+    seller_id, title, description, category, item_condition, price, currency, image_path
+  )
+  values (
+    auth.uid(), trim(p_title), trim(coalesce(p_description, '')), p_category,
+    p_condition, p_price, 'NGN', p_image_path
+  )
+  returning * into result;
+  return result;
+end;
+$$;
+revoke execute on function public.create_mtu_marketplace_listing(text, text, text, text, numeric, text) from public, anon;
+grant execute on function public.create_mtu_marketplace_listing(text, text, text, text, numeric, text) to authenticated;
+
+notify pgrst, 'reload schema';

@@ -28,7 +28,8 @@ import {
 import { CampusPanels } from "@/components/CampusPanels";
 import { ConvoDashboard } from "@/components/ConvoDashboard";
 import { CallOverlay } from "@/components/CallOverlay";
-import { askGemini } from "@/lib/providers";
+import { assistantUnavailableFallback, getLocalAssistantAnswer } from "@/lib/assistant-help";
+import { askGemini, ProviderRequestError, type AssistantPageContext } from "@/lib/providers";
 import { AvatarCropper } from "@/components/AvatarCropper";
 import { ConvoSuccessCelebration } from "@/components/ConvoSuccessCelebration";
 import { ConvoProfilePreview } from "@/components/ConvoProfilePreview";
@@ -84,10 +85,18 @@ import {
   listMtuConnectionRequests,
   listMtuBlockedStudents,
   listMtuConversations,
+  listMtuStudentFollows,
+  listMtuStudentFollowState,
+  getMtuStudentFollowListVisibility,
+  setMtuStudentFollowListVisibility,
+  removeMtuStudentFollower,
+  listMtuStudentContentRestrictions,
+  setMtuStudentContentRestriction,
   listMtuGroupMembers,
   listMtuMessageInteractions,
   listMtuMessages,
   listMtuNotifications,
+  listMtuFollowNotifications,
   markMtuNotificationRead,
   clearMtuNotifications,
   markMtuConversationRead,
@@ -99,6 +108,7 @@ import {
   searchMtuConversationMessages,
   syncMyMtuDirectoryProfile,
   sendMtuConnectionRequest,
+  setMtuStudentFollow,
   listMtuApprovedPeople,
   setMtuApprovedPerson,
   sendMtuMessage,
@@ -933,6 +943,50 @@ export default function Home() {
     }
     return searchMtuStudents(supabase, query);
   }, []);
+  const loadStudentFollowState = React.useCallback(async (studentIds: string[]) => {
+    if (!supabase) return { data: [], error: new Error(supabaseSetupMessage()) };
+    return listMtuStudentFollowState(supabase, studentIds);
+  }, []);
+  const loadStudentFollows = React.useCallback(async (direction: "following" | "followers" = "following") => {
+    if (!supabase) return { data: [], error: new Error(supabaseSetupMessage()) };
+    return listMtuStudentFollows(supabase, direction);
+  }, []);
+  const loadStudentFollowPrivacy = React.useCallback(async () => {
+    if (!supabase) return { data: null, error: new Error(supabaseSetupMessage()) };
+    return getMtuStudentFollowListVisibility(supabase);
+  }, []);
+  const setStudentFollowPrivacy = React.useCallback(async (visibility: { followers_visibility: "public" | "followers" | "private"; following_visibility: "public" | "followers" | "private" }) => {
+    if (!supabase) return { ok: false, error: supabaseSetupMessage() };
+    const result = await setMtuStudentFollowListVisibility(supabase, visibility);
+    return result.error || !result.data
+      ? { ok: false, error: result.error?.message || "Profile privacy could not be saved." }
+      : { ok: true };
+  }, []);
+  const removeStudentFollower = React.useCallback(async (followerId: string) => {
+    if (!supabase) return { ok: false, error: supabaseSetupMessage() };
+    const result = await removeMtuStudentFollower(supabase, followerId);
+    return result.error || !result.data
+      ? { ok: false, error: result.error?.message || "Follower could not be removed." }
+      : { ok: true };
+  }, []);
+  const loadStudentContentRestrictions = React.useCallback(async () => {
+    if (!supabase) return { data: [], error: new Error(supabaseSetupMessage()) };
+    return listMtuStudentContentRestrictions(supabase);
+  }, []);
+  const setStudentContentRestriction = React.useCallback(async (studentId: string, restricted: boolean) => {
+    if (!supabase) return { ok: false, error: supabaseSetupMessage() };
+    const result = await setMtuStudentContentRestriction(supabase, studentId, restricted);
+    return result.error || !result.data
+      ? { ok: false, error: result.error?.message || "Content visibility could not be updated." }
+      : { ok: true };
+  }, []);
+  const setStudentFollow = React.useCallback(async (studentId: string, following: boolean) => {
+    if (!supabase) return { ok: false, error: supabaseSetupMessage() };
+    const result = await setMtuStudentFollow(supabase, studentId, following);
+    return result.error || !result.data
+      ? { ok: false, error: result.error?.message || "The follow setting could not be saved." }
+      : { ok: true };
+  }, []);
   const sendConnectionRequest = async (recipientId: string) => {
     if (!supabase)
       return { ok: false, error: "Sign in to connect with another student." };
@@ -1416,8 +1470,30 @@ export default function Home() {
   };
   const loadNotifications = async () => {
     if (!supabase) return { data: [], error: "Sign in to view notifications." };
-    const result = await listMtuNotifications(supabase);
-    return result.error ? { data: [], error: result.error.message } : { data: result.data, error: null };
+    const [result, followResult] = await Promise.all([
+      listMtuNotifications(supabase),
+      listMtuFollowNotifications(supabase),
+    ]);
+    if (result.error) return { data: [], error: result.error.message };
+    if (followResult.error) return { data: [], error: followResult.error.message };
+    const notifications = [
+      ...result.data.filter((notification) => notification.notification_type !== "follow"),
+      ...followResult.data.map((notification) => ({
+        id: notification.id,
+        notification_type: "follow" as const,
+        title: `${notification.actor_name} followed you`,
+        body: "Followed you",
+        conversation_id: null,
+        entity_id: notification.actor_id,
+        payload: { follower_id: notification.actor_id },
+        created_at: notification.created_at,
+        read_at: notification.read_at,
+        actor_id: notification.actor_id,
+        actor_name: notification.actor_name,
+        actor_avatar_url: notification.actor_avatar_url,
+      })),
+    ].sort((left, right) => right.created_at.localeCompare(left.created_at)).slice(0, 100);
+    return { data: notifications, error: null };
   };
   const markNotificationRead = async (notificationId: string) => {
     if (!supabase) return { error: "Sign in to update notifications." };
@@ -1493,17 +1569,24 @@ export default function Home() {
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     attachments: Array<{ name: string; mimeType: string; data: string }> = [],
     sharedFiles: Array<{ name: string; mimeType: string }> = [],
+    context: AssistantPageContext = { view: "assistant" },
   ) => {
     if (!supabase) throw new Error("Sign in to use the study assistant.");
-    return await askGemini(supabase, messages, attachments, sharedFiles, {
-      name: displayName || "Ajewole Timothy Ayomide Moyin",
-      email: authenticatedEmail,
-      age: 17,
-      birthday: "21 April 2009",
-      year: "300 level",
-      programme: programme || major || "Computer Science",
-      goal: "achieving a first-class GPA",
-    });
+    const lastQuestion = messages[messages.length - 1]?.content || "";
+    if (!attachments.length) {
+      const localAnswer = getLocalAssistantAnswer(lastQuestion, {
+        view: context.view,
+        vaultEnabled: import.meta.env.VITE_ENABLE_VAULT === "true",
+      });
+      if (localAnswer) return { ...localAnswer, mode: "local" as const };
+    }
+    try {
+      return await askGemini(supabase, messages, attachments, sharedFiles, context);
+    } catch (error) {
+      if (error instanceof ProviderRequestError && [400, 401, 413].includes(error.status)) throw error;
+      const code = error instanceof ProviderRequestError ? error.code : undefined;
+      return { text: assistantUnavailableFallback(code), mode: "fallback" as const };
+    }
   };
 
   if (showDashboard)
@@ -1525,6 +1608,14 @@ export default function Home() {
           joinedGroupIds={joinedGroupIds}
           onJoinGroup={mode === "live" ? joinGroup : undefined}
           onSearchStudents={supabase ? searchStudents : undefined}
+          onLoadStudentFollowState={supabase ? loadStudentFollowState : undefined}
+          onLoadStudentFollows={supabase ? loadStudentFollows : undefined}
+          onSetStudentFollow={supabase ? setStudentFollow : undefined}
+          onRemoveStudentFollower={supabase ? removeStudentFollower : undefined}
+          onLoadStudentFollowPrivacy={supabase ? loadStudentFollowPrivacy : undefined}
+          onSetStudentFollowPrivacy={supabase ? setStudentFollowPrivacy : undefined}
+          onSetStudentContentRestriction={supabase ? setStudentContentRestriction : undefined}
+          onLoadStudentContentRestrictions={supabase ? loadStudentContentRestrictions : undefined}
           onSendConnectionRequest={supabase ? sendConnectionRequest : undefined}
           onCancelConnectionRequest={
             supabase ? cancelConnectionRequest : undefined

@@ -3,7 +3,7 @@ import EmojiPicker, { EmojiClickData, EmojiStyle, SuggestionMode, Theme } from "
 import "@/profile-privacy.css";
 import "../directory-refinement.css";
 import "../messages-thread-repair.css";
-import { Archive, ArrowDown, ArrowLeft, ArrowRight, Ban, Bell, Bookmark, Bot, CalendarDays, Camera, Check, ChevronRight, Compass, Copy, Download, FileText, FolderOpen, Headphones, Home, IdCard, Layers3, LayoutGrid, MailOpen, MessageCircle, MoreHorizontal, Paperclip, Pencil, Phone, Pin, Plus, Reply, Search, Send, Share2, ShieldCheck, Sparkles, Star, SunMoon, Trash2, UserRound, Users, Video, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowLeft, ArrowRight, Ban, Bell, Bookmark, Bot, CalendarDays, Camera, Check, ChevronRight, Compass, Copy, Download, FileText, FolderOpen, Headphones, Home, IdCard, Layers3, LayoutGrid, MailOpen, MessageCircle, MoreHorizontal, Paperclip, Pencil, Phone, Pin, Plus, Reply, Search, Send, Share2, ShieldCheck, Sparkles, Star, Store, SunMoon, Trash2, UserRound, Users, Video, X } from "lucide-react";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import QRCode from "qrcode";
@@ -11,13 +11,23 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CampusGroup, CampusPost } from "@/lib/campus-data";
 import { ConvoOrbit } from "@/components/ConvoOrbit";
 import { StatusStories } from "@/components/StatusStories";
+import { CampusFeedPanel } from "@/components/CampusFeedPanel";
+import { MarketplacePanel } from "@/components/MarketplacePanel";
 import { StudentIdCard, StudentIdCardVisibilityContext } from "@/components/StudentIdCard";
 import { VaultPanel } from "@/components/VaultPanel";
 import { MTU_COLLEGE_OPTIONS, MTU_LEVEL_OPTIONS, MTU_PROGRAMME_OPTIONS, programmesForCollege } from "@shared/academic";
-import { supabase, type MtuConversationAppearance, type MtuNotification, type MtuPrivacySettings, type ProfileVisibility, removeConversationAppearanceImage, uploadConversationAppearanceImage, validateConversationAppearanceImage } from "@/lib/supabase";
+import type { ConvoWorkspaceView } from "@shared/assistant-knowledge";
+import type { AssistantHelpAction } from "@/lib/assistant-help";
+import { supabase, type MtuConversationAppearance, type MtuNotification, type MtuPrivacySettings, type MtuStudentFollowListVisibility, type MtuStudentContentRestriction, type ProfileVisibility, removeConversationAppearanceImage, uploadConversationAppearanceImage, validateConversationAppearanceImage } from "@/lib/supabase";
 
-type DashboardView = "home" | "discover" | "messages" | "notifications" | "profile" | "groups" | "campus" | "events" | "files" | "assistant" | "vault" | "settings" | "id";
-type AssistantMessage = { role: "user" | "assistant"; content: string; attachmentNames?: string[] };
+type DashboardView = ConvoWorkspaceView;
+type AssistantMessage = {
+  role: "user" | "assistant";
+  content: string;
+  attachmentNames?: string[];
+  source?: "local" | "ai" | "fallback";
+  action?: AssistantHelpAction;
+};
 type AssistantChat = { id: string; title: string; messages: AssistantMessage[]; updatedAt: number };
 
 type DirectoryStudent = {
@@ -51,12 +61,14 @@ type SharedFile = {
 
 type ActivityNotification = {
   id: string;
-  kind: "message" | "connection" | "group";
+  kind: "message" | "connection" | "group" | "follow";
   title: string;
   body: string;
   createdAt: string;
   conversationId?: string;
   connectionRequestId?: string;
+  actorId?: string;
+  actorAvatarUrl?: string | null;
   unread: boolean;
 };
 
@@ -77,6 +89,14 @@ type Props = {
   joinedGroupIds?: string[];
   onJoinGroup?: (groupId: string) => Promise<{ ok: boolean; error?: string; alreadyJoined?: boolean }>;
   onSearchStudents?: (query: string) => Promise<{ data: Array<{ id: string; display_name: string; student_id: string | null; is_self?: boolean; programme: string | null; department: string | null; level: string | null; avatar_url: string | null; bio: string | null; status_text: string | null }>; error: { message: string } | null }>;
+  onLoadStudentFollowState?: (studentIds: string[]) => Promise<{ data: Array<{ student_id: string; follower_count: number; following_count: number; followed_by_me: boolean }>; error: Error | null }>;
+  onLoadStudentFollows?: (direction?: "following" | "followers") => Promise<{ data: Array<{ id: string; display_name: string; student_id: string | null; level: string | null; department: string | null; programme: string | null; avatar_url: string | null; bio: string | null; status_text: string | null; follower_count: number; following_count: number }>; error: Error | null }>;
+  onSetStudentFollow?: (studentId: string, following: boolean) => Promise<{ ok: boolean; error?: string }>;
+  onRemoveStudentFollower?: (followerId: string) => Promise<{ ok: boolean; error?: string }>;
+  onLoadStudentFollowPrivacy?: () => Promise<{ data: MtuStudentFollowListVisibility | null; error: Error | null }>;
+  onSetStudentFollowPrivacy?: (visibility: MtuStudentFollowListVisibility) => Promise<{ ok: boolean; error?: string }>;
+  onSetStudentContentRestriction?: (studentId: string, restricted: boolean) => Promise<{ ok: boolean; error?: string }>;
+  onLoadStudentContentRestrictions?: () => Promise<{ data: MtuStudentContentRestriction[]; error: Error | null }>;
   onSendConnectionRequest?: (recipientId: string) => Promise<{ ok: boolean; error?: string }>;
   onCancelConnectionRequest?: (recipientId: string) => Promise<{ ok: boolean; error?: string }>;
   onStartDirectConversation?: (studentId: string) => Promise<{ data: string | null; error: { message: string } | null }>;
@@ -170,7 +190,7 @@ type Props = {
   onUpdatePrivacy?: (visibility: ProfileVisibility) => Promise<{ ok: boolean; error?: string }>;
   onLoadApprovedPeople?: () => Promise<{ data: Array<{ approved_id: string; display_name: string | null; student_id: string | null; avatar_url: string | null; approved_at: string }>; error: string | null }>;
   onSetApprovedPerson?: (studentId: string, approved: boolean) => Promise<{ ok: boolean; error?: string }>;
-  onAskAssistant?: (messages: Array<{ role: "user" | "assistant"; content: string }>, attachments?: Array<{ name: string; mimeType: string; data: string }>, sharedFiles?: Array<{ name: string; mimeType: string }>) => Promise<{ text: string; sessionSeconds?: number }>;
+  onAskAssistant?: (messages: Array<{ role: "user" | "assistant"; content: string }>, attachments?: Array<{ name: string; mimeType: string; data: string }>, sharedFiles?: Array<{ name: string; mimeType: string }>, context?: { view: ConvoWorkspaceView }) => Promise<{ text: string; sessionSeconds?: number; mode?: "local" | "ai" | "fallback"; action?: AssistantHelpAction }>;
   vaultClient?: SupabaseClient | null;
   isExiting?: boolean;
   isEntering?: boolean;
@@ -179,7 +199,7 @@ type Props = {
 export function groupSuccessCopy(groupName: string, alreadyJoined = false) { return alreadyJoined ? { title: `Already part of ${groupName}`, description: "Your circle is waiting for you." } : { title: `You’re in ${groupName}`, description: "Your new circle is ready to explore." }; }
 export function groupInviteUrl(origin: string, token: string) { return `${origin.replace(/\/$/, "")}/?group-invite=${encodeURIComponent(token)}`; }
 
-function navLabel(view: DashboardView) { return { home: "Home", discover: "Search", messages: "Messages", notifications: "Notifications", profile: "Profile", groups: "Groups", campus: "Campus", events: "Events", files: "Files", assistant: "Study assistant", vault: "Convo Vault", settings: "Settings", id: "Digital ID" }[view]; }
+function navLabel(view: DashboardView) { return { home: "Home", discover: "Search", messages: "Messages", notifications: "Notifications", profile: "Profile", groups: "Groups", feed: "Feed", campus: "Campus", marketplace: "Marketplace", events: "Events", files: "Files", assistant: "Study assistant", vault: "Convo Vault", settings: "Settings", id: "Digital ID" }[view]; }
 
 function messageDateLabel(value: string) {
   const date = new Date(value);
@@ -194,7 +214,7 @@ function messageDateLabel(value: string) {
 function messageDateKey(value: string) { return new Date(value).toLocaleDateString(); }
 function messageTime(value: string) { return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
 
-export function ConvoDashboard({ currentUserId = "", displayName, legalName = "", major, avatarUrl, studentId = "", level = "", department = "", programme, bio = "", profileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true }, groups, posts, joinedGroupIds,   onJoinGroup, onSearchStudents, onSendConnectionRequest, onCancelConnectionRequest, onStartDirectConversation, onCreateGroupConversation, onUpdateGroupImage, onLoadGroupMembers, onAddGroupMembers, onSetGroupMemberRole, onRemoveGroupMember, onCreateGroupInvite, onRotateGroupInvite, onLoadGroupPermissions, onSetGroupPermissions, onJoinGroupInvite, onLoadGroupJoinRequests, onReviewGroupJoinRequest, onSendMessage, onEditMessage, onDeleteMessage, onLoadMessageInteractions, onToggleMessageReaction, onToggleSavedMessage, onTogglePinnedMessage, onSetConversationPreference, onSetConversationRailState, onLoadPrivacySettings, onSetPrivacySettings, onLoadConversationNotificationPreference, onSetConversationNotificationPreference, notificationsEnabled = false, onSetNotificationsEnabled, onLoadNotifications, onMarkNotificationRead, onClearNotifications, onSubscribeToNotifications, onLoadConversationAppearance, onSetConversationAppearance, onSubscribeToConversationAppearance, onLoadSavedMessages, onSearchConversationMessages, onCreateGroupPoll, onUpdateGroupPoll, onCloseGroupPoll, onDeleteGroupPoll, onLoadGroupEvents, onSetGroupEventResponse, onCreateGroupEvent, onCancelGroupEvent, onUpdateGroupEvent, onDeleteGroupEvent, onLoadGroupNotes, onUpdateGroupNote, onCreateGroupNote, onLoadGroupAnnouncements, onCreateGroupAnnouncement, onUpdateGroupAnnouncement, onDeleteGroupAnnouncement, onLoadGroupPolls, onVoteOnGroupPoll, onCreateGroupTask, onUpdateGroupTask, onDeleteGroupTask, onLoadGroupTasks, onSetGroupTaskCompleted, onSubscribeToGroupActivity, onLoadConnectionRequests, onSubscribeToConnectionRequests, onAcceptConnectionRequest, onBlockStudent, onLoadBlockedStudents, onUnblockStudent, onReportStudent, onTouchLastSeen, onSearchGroups, onRequestGroupJoin, onEndGroup, onSetGroupPrivate, onDeleteGroupMessage, onLoadSharedFiles, onLoadConversations,   onLoadMessages, onMarkConversationRead, onSubscribeToPublicProfiles, onSubscribeToMessages, onSubscribeToAllMessages, onSubscribeToConversation, onExit, onLogout, onUpdateProfile, onUpdateAvatar, onUpdatePrivacy, onLoadApprovedPeople, onSetApprovedPerson, onAskAssistant, vaultClient, isExiting = false, isEntering = false }: Props) {
+export function ConvoDashboard({ currentUserId = "", displayName, legalName = "", major, avatarUrl, studentId = "", level = "", department = "", programme, bio = "", profileVisibility = { programme: true, college: true, level: true, bio: true, incognito: false, allow_exact_id_lookup: false, allow_public_id_copy: true }, groups, posts, joinedGroupIds,   onJoinGroup, onSearchStudents, onLoadStudentFollowState, onLoadStudentFollows, onSetStudentFollow, onRemoveStudentFollower, onLoadStudentFollowPrivacy, onSetStudentFollowPrivacy, onSetStudentContentRestriction, onLoadStudentContentRestrictions, onSendConnectionRequest, onCancelConnectionRequest, onStartDirectConversation, onCreateGroupConversation, onUpdateGroupImage, onLoadGroupMembers, onAddGroupMembers, onSetGroupMemberRole, onRemoveGroupMember, onCreateGroupInvite, onRotateGroupInvite, onLoadGroupPermissions, onSetGroupPermissions, onJoinGroupInvite, onLoadGroupJoinRequests, onReviewGroupJoinRequest, onSendMessage, onEditMessage, onDeleteMessage, onLoadMessageInteractions, onToggleMessageReaction, onToggleSavedMessage, onTogglePinnedMessage, onSetConversationPreference, onSetConversationRailState, onLoadPrivacySettings, onSetPrivacySettings, onLoadConversationNotificationPreference, onSetConversationNotificationPreference, notificationsEnabled = false, onSetNotificationsEnabled, onLoadNotifications, onMarkNotificationRead, onClearNotifications, onSubscribeToNotifications, onLoadConversationAppearance, onSetConversationAppearance, onSubscribeToConversationAppearance, onLoadSavedMessages, onSearchConversationMessages, onCreateGroupPoll, onUpdateGroupPoll, onCloseGroupPoll, onDeleteGroupPoll, onLoadGroupEvents, onSetGroupEventResponse, onCreateGroupEvent, onCancelGroupEvent, onUpdateGroupEvent, onDeleteGroupEvent, onLoadGroupNotes, onUpdateGroupNote, onCreateGroupNote, onLoadGroupAnnouncements, onCreateGroupAnnouncement, onUpdateGroupAnnouncement, onDeleteGroupAnnouncement, onLoadGroupPolls, onVoteOnGroupPoll, onCreateGroupTask, onUpdateGroupTask, onDeleteGroupTask, onLoadGroupTasks, onSetGroupTaskCompleted, onSubscribeToGroupActivity, onLoadConnectionRequests, onSubscribeToConnectionRequests, onAcceptConnectionRequest, onBlockStudent, onLoadBlockedStudents, onUnblockStudent, onReportStudent, onTouchLastSeen, onSearchGroups, onRequestGroupJoin, onEndGroup, onSetGroupPrivate, onDeleteGroupMessage, onLoadSharedFiles, onLoadConversations,   onLoadMessages, onMarkConversationRead, onSubscribeToPublicProfiles, onSubscribeToMessages, onSubscribeToAllMessages, onSubscribeToConversation, onExit, onLogout, onUpdateProfile, onUpdateAvatar, onUpdatePrivacy, onLoadApprovedPeople, onSetApprovedPerson, onAskAssistant, vaultClient, isExiting = false, isEntering = false }: Props) {
 
   const [joinedGroups, setJoinedGroups] = React.useState<string[]>(() => joinedGroupIds || []);
   const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
@@ -203,8 +223,198 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const [requestStates, setRequestStates] = React.useState<Record<string, "idle" | "pending" | "connected">>({});
   const [connectionRequests, setConnectionRequests] = React.useState<Array<{ id: string; requester_id: string; recipient_id: string; status: string; direction: string; requester_display_name?: string | null; requester_student_id?: string | null }>>([]);
   const [liveStudents, setLiveStudents] = React.useState<DirectoryStudent[]>([]);
+  const renderSocialProfile = () => {
+    const ownFollowState = studentFollowState[currentUserId];
+    const query = followListSearch.trim().toLowerCase();
+    const matchingStudents = followingStudents.filter((student) =>
+      `${student.name} ${student.programme} ${student.department} ${student.level}`.toLowerCase().includes(query),
+    );
+
+    return <section className="dashboard-panel social-profile-panel">
+      <div className="panel-heading">
+        <div><span className="eyebrow dark">Your social circle</span><h2>Followers &amp; following</h2></div>
+        <button type="button" className="text-link" onClick={() => openView("discover")}>Find people <ArrowRight size={14} /></button>
+      </div>
+      <div className="social-profile-counts">
+        <button type="button" className={followListDirection === "followers" ? "is-active" : ""} onClick={() => { setFollowListDirection("followers"); setFollowListSearch(""); }}>
+          <strong>{ownFollowState?.follower_count ?? "—"}</strong><span>Followers</span>
+        </button>
+        <button type="button" className={followListDirection === "following" ? "is-active" : ""} onClick={() => { setFollowListDirection("following"); setFollowListSearch(""); }}>
+          <strong>{ownFollowState?.following_count ?? "—"}</strong><span>Following</span>
+        </button>
+      </div>
+      <div className="social-list-privacy">
+        <label className="social-private-account-toggle">
+          <input
+            type="checkbox"
+            checked={studentFollowPrivacy.followers_visibility === "private" && studentFollowPrivacy.following_visibility === "private"}
+            disabled={followPrivacySaving || !onSetStudentFollowPrivacy}
+            onChange={(event) => void setStudentFollowPrivacy({
+              followers_visibility: event.target.checked ? "private" : "public",
+              following_visibility: event.target.checked ? "private" : "public",
+            })}
+          />
+          <span><b>Private social lists</b><small>Hide both lists from everyone except you.</small></span>
+        </label>
+        <label>Who can see your followers
+          <select value={studentFollowPrivacy.followers_visibility} disabled={followPrivacySaving || !onSetStudentFollowPrivacy} onChange={(event) => void updateStudentFollowPrivacy("followers_visibility", event.target.value as MtuStudentFollowListVisibility["followers_visibility"])}>
+            <option value="public">Everyone eligible</option><option value="followers">People who follow you</option><option value="private">Only you</option>
+          </select>
+        </label>
+        <label>Who can see who you follow
+          <select value={studentFollowPrivacy.following_visibility} disabled={followPrivacySaving || !onSetStudentFollowPrivacy} onChange={(event) => void updateStudentFollowPrivacy("following_visibility", event.target.value as MtuStudentFollowListVisibility["following_visibility"])}>
+            <option value="public">Everyone eligible</option><option value="followers">People who follow you</option><option value="private">Only you</option>
+          </select>
+        </label>
+      </div>
+      <div className="social-follow-list-heading">
+        <h3>{followListDirection === "followers" ? "Your followers" : "People you follow"}</h3>
+        <label className="social-list-search"><Search size={15} /><input value={followListSearch} onChange={(event) => setFollowListSearch(event.target.value)} placeholder="Search this list" aria-label={`Search ${followListDirection}`} /></label>
+      </div>
+      {directoryLoading ? <div className="directory-empty"><span className="pulse-dot" /><span>Loading your {followListDirection}…</span></div> : matchingStudents.length ? <div className="social-follow-list">
+        {matchingStudents.map((student) => <article className="social-follow-row" key={student.id}>
+          <button type="button" className={`student-avatar ${student.tone}`} aria-label={`Preview ${student.name}`} onClick={() => setPeekStudent(student)}>
+            {student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}
+          </button>
+          <button type="button" className="social-follow-identity" onClick={() => setPeekStudent(student)}>
+            <b>{student.name}</b><small>{[student.programme, student.level].filter(Boolean).join(" · ") || "MTU student"}</small>
+          </button>
+          {followListDirection === "following"
+            ? <button type="button" className="student-follow-button is-following" disabled={followBusyId === student.id} onClick={() => void toggleStudentFollow(student)}>Following</button>
+            : <button type="button" className="outline-button social-remove-follower" disabled={followBusyId === student.id || !onRemoveStudentFollower} onClick={() => void removeStudentFollower(student)}>Remove</button>}
+          <button type="button" className="outline-button social-hide-content" disabled={contentRestrictionBusyId === student.id || !onSetStudentContentRestriction} onClick={() => void setStudentContentRestriction(student, !studentContentRestrictions.some((entry) => entry.user_id === student.id))}>
+            {studentContentRestrictions.some((entry) => entry.user_id === student.id) ? "Posts hidden" : "Hide posts"}
+          </button>
+        </article>)}
+      </div> : <div className="directory-empty"><Users size={20} /><strong>{query ? "No match in this list." : followListDirection === "followers" ? "No eligible followers yet." : "You aren’t following anyone yet."}</strong><span>{query ? "Try another name or programme." : "Follow classmates or share your profile to grow your circle."}</span></div>}
+      <div className="social-restrictions">
+        <div><span className="eyebrow dark">Feed &amp; Public Stories</span><h3>People who can’t see your posts</h3><p>This is separate from Convo’s full block and doesn’t change messaging or connections.</p></div>
+        {studentContentRestrictions.length ? studentContentRestrictions.map((restriction) => {
+          const student: DirectoryStudent = {
+            id: restriction.user_id,
+            studentId: "",
+            avatarUrl: restriction.avatar_url,
+            name: restriction.display_name,
+            initials: restriction.display_name.slice(0, 2).toUpperCase(),
+            programme: "",
+            department: "",
+            level: "",
+            bio: "",
+            tone: "sage",
+            status: "",
+            mutual: "",
+          };
+          return <article className="social-restriction-row" key={restriction.user_id}>
+            {restriction.avatar_url ? <img src={restriction.avatar_url} alt="" /> : <span>{student.initials}</span>}
+            <b>{restriction.display_name}</b>
+            <button type="button" className="outline-button" disabled={contentRestrictionBusyId === restriction.user_id} onClick={() => void setStudentContentRestriction(student, false)}>Allow again</button>
+          </article>;
+        }) : <p className="social-restrictions-empty">No one is hidden from your Feed or Public Stories.</p>}
+      </div>
+    </section>;
+  };
+
+  React.useEffect(() => {
+    if (!onLoadStudentFollowState || !currentUserId || (activeView !== "home" && activeView !== "discover" && activeView !== "profile")) return;
+    let active = true;
+    const ids = [...new Set([currentUserId, ...liveStudents.map((student) => student.id)])];
+    void onLoadStudentFollowState(ids).then((result) => {
+      if (!active) return;
+      if (result.error) {
+        toast.error("Follow details could not be loaded", { description: result.error.message });
+        return;
+      }
+      setStudentFollowState((current) => ({
+        ...current,
+        ...Object.fromEntries(result.data.map((item) => [item.student_id, {
+          follower_count: item.follower_count,
+          following_count: item.following_count,
+          followed_by_me: item.followed_by_me,
+        }])),
+      }));
+    }).catch((caught: unknown) => {
+      if (active) toast.error("Follow details could not be loaded", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    });
+    return () => { active = false; };
+  }, [activeView, currentUserId, liveStudents, onLoadStudentFollowState]);
   const [directoryLoading, setDirectoryLoading] = React.useState(false);
   const [directoryError, setDirectoryError] = React.useState("");
+  const [studentFollowState, setStudentFollowState] = React.useState<Record<string, { follower_count: number; following_count: number; followed_by_me: boolean }>>({});
+  const [followBusyId, setFollowBusyId] = React.useState("");
+  const [followingOnly, setFollowingOnly] = React.useState(false);
+  const [followListDirection, setFollowListDirection] = React.useState<"following" | "followers">("following");
+  const [followListSearch, setFollowListSearch] = React.useState("");
+  const [followingStudents, setFollowingStudents] = React.useState<DirectoryStudent[]>([]);
+  const [studentFollowPrivacy, setStudentFollowPrivacy] = React.useState<MtuStudentFollowListVisibility>({
+    followers_visibility: "private",
+    following_visibility: "private",
+  });
+  const [followPrivacySaving, setFollowPrivacySaving] = React.useState(false);
+  const [studentContentRestrictions, setStudentContentRestrictions] = React.useState<MtuStudentContentRestriction[]>([]);
+  const [contentRestrictionBusyId, setContentRestrictionBusyId] = React.useState("");
+  React.useEffect(() => {
+    if ((!followingOnly && activeView !== "profile") || !onLoadStudentFollows) {
+      return;
+    }
+    let active = true;
+    setDirectoryLoading(true);
+    void onLoadStudentFollows(followListDirection).then((result) => {
+      if (!active) return;
+      if (result.error) {
+        toast.error(`Your ${followListDirection} list could not be loaded`, { description: result.error.message });
+        return;
+      }
+      setFollowingStudents(result.data.map((student, index) => ({
+        id: student.id,
+        studentId: student.student_id || "",
+        avatarUrl: student.avatar_url,
+        name: student.display_name,
+        initials: student.display_name.slice(0, 2).toUpperCase(),
+        programme: student.programme || "",
+        department: student.department || "",
+        level: student.level || "",
+        bio: student.bio || "",
+        tone: ["rose", "sage", "butter", "apricot"][index % 4],
+        status: student.status_text || "",
+        mutual: "",
+      })));
+    }).catch((caught: unknown) => {
+      if (active) toast.error(`Your ${followListDirection} list could not be loaded`, { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    }).finally(() => {
+      if (active) setDirectoryLoading(false);
+    });
+    return () => { active = false; };
+  }, [activeView, followListDirection, followingOnly, onLoadStudentFollows]);
+  React.useEffect(() => {
+    if (activeView !== "profile" || !onLoadStudentFollowPrivacy) return;
+    let active = true;
+    void onLoadStudentFollowPrivacy().then((result) => {
+      if (!active) return;
+      if (result.error || !result.data) {
+        toast.error("Profile privacy could not be loaded", { description: result.error?.message || "Please try again shortly." });
+        return;
+      }
+      setStudentFollowPrivacy(result.data);
+    }).catch((caught: unknown) => {
+      if (active) toast.error("Profile privacy could not be loaded", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    });
+    return () => { active = false; };
+  }, [activeView, onLoadStudentFollowPrivacy]);
+  React.useEffect(() => {
+    if (activeView !== "settings" && activeView !== "profile" || !onLoadStudentContentRestrictions) return;
+    let active = true;
+    void onLoadStudentContentRestrictions().then((result) => {
+      if (!active) return;
+      if (result.error) {
+        toast.error("Hidden-content settings could not be loaded", { description: result.error.message });
+        return;
+      }
+      setStudentContentRestrictions(result.data);
+    }).catch((caught: unknown) => {
+      if (active) toast.error("Hidden-content settings could not be loaded", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    });
+    return () => { active = false; };
+  }, [activeView, onLoadStudentContentRestrictions]);
   const [suggestionFilter, setSuggestionFilter] = React.useState<"college" | "programme">("programme");
   const [suggestionLimit, setSuggestionLimit] = React.useState(3);
   const [loadingMoreSuggestions, setLoadingMoreSuggestions] = React.useState(false);
@@ -461,51 +671,102 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   React.useEffect(() => { onSubscribeToMessagesRef.current = onSubscribeToMessages; }, [onSubscribeToMessages]);
   React.useEffect(() => { onLoadGroupMembersRef.current = onLoadGroupMembers; }, [onLoadGroupMembers]);
   React.useEffect(() => {
+    setActivityNotifications([]);
     if (!currentUserId || !onLoadNotifications) return;
     let active = true;
-    void onLoadNotifications().then((result) => {
-      if (!active) return;
-      if (result.error) {
-        toast.error("Notifications could not be loaded", { description: result.error });
-        return;
-      }
-      setActivityNotifications(result.data.map((item) => ({
-        id: item.id,
-        kind: item.notification_type === "connection" ? "connection" : item.notification_type === "group" ? "group" : "message",
-        title: item.title,
-        body: item.body,
-        createdAt: item.created_at,
-        conversationId: item.conversation_id || undefined,
-        connectionRequestId: item.notification_type === "connection"
-          ? (typeof item.payload?.request_id === "string" ? item.payload.request_id : item.entity_id || undefined)
-          : undefined,
-        unread: !item.read_at,
-      })));
-    }).catch((error: unknown) => {
-      if (!active) return;
-      toast.error("Notifications could not be loaded", { description: error instanceof Error ? error.message : "Please try again shortly." });
-    });
-    const unsubscribe = onSubscribeToNotifications?.((raw) => {
+    let initialLoadCompleted = false;
+    let notificationEventVersion = 0;
+    const realtimeEvents: Array<Record<string, unknown>> = [];
+    const mapNotification = (raw: Record<string, unknown>): ActivityNotification | null => {
       const id = typeof raw.id === "string" ? raw.id : "";
-      if (!id) return;
-      if (raw.__deleted === true || raw.read_at) {
-        setActivityNotifications((current) => current.filter((item) => item.id !== id));
-        return;
-      }
+      if (!id || raw.__deleted === true || raw.read_at) return null;
       const notificationType = String(raw.notification_type || "message");
-      const next: ActivityNotification = {
+      const payload = raw.payload as Record<string, unknown> | undefined;
+      return {
         id,
-        kind: notificationType === "connection" ? "connection" : notificationType === "group" ? "group" : "message",
+        kind: (notificationType === "connection" ? "connection" : notificationType === "group" ? "group" : notificationType === "follow" ? "follow" : "message") as ActivityNotification["kind"],
         title: String(raw.title || "New notification"),
         body: String(raw.body || ""),
         createdAt: String(raw.created_at || new Date().toISOString()),
         conversationId: typeof raw.conversation_id === "string" ? raw.conversation_id : undefined,
+        actorId: typeof raw.actor_id === "string" ? raw.actor_id : typeof payload?.follower_id === "string" ? payload.follower_id : undefined,
+        actorAvatarUrl: typeof raw.actor_avatar_url === "string" ? raw.actor_avatar_url : null,
         connectionRequestId: notificationType === "connection"
-          ? (typeof (raw.payload as Record<string, unknown> | undefined)?.request_id === "string" ? String((raw.payload as Record<string, unknown>).request_id) : typeof raw.entity_id === "string" ? raw.entity_id : undefined)
+          ? (typeof payload?.request_id === "string" ? payload.request_id : typeof raw.entity_id === "string" ? raw.entity_id : undefined)
           : undefined,
-        unread: !raw.read_at,
+        unread: true,
       };
-      setActivityNotifications((current) => [next, ...current.filter((item) => item.id !== id)].slice(0, 100));
+    };
+    const applyEvent = (current: ActivityNotification[], raw: Record<string, unknown>) => {
+      const id = typeof raw.id === "string" ? raw.id : "";
+      if (!id) return current;
+      const remaining = current.filter((item) => item.id !== id);
+      const mapped = mapNotification(raw);
+      return mapped ? [mapped, ...remaining].slice(0, 100) : remaining;
+    };
+    void onLoadNotifications().then((result) => {
+      if (!active) return;
+      if (result.error) {
+        initialLoadCompleted = true;
+        toast.error("Notifications could not be loaded", { description: result.error });
+        return;
+      }
+      const loaded = result.data.map((item) => ({
+        id: item.id,
+        kind: (item.notification_type === "connection" ? "connection" : item.notification_type === "group" ? "group" : item.notification_type === "follow" ? "follow" : "message") as ActivityNotification["kind"],
+        title: item.title,
+        body: item.body,
+        createdAt: item.created_at,
+        conversationId: item.conversation_id || undefined,
+        actorId: item.actor_id || (typeof item.payload?.follower_id === "string" ? item.payload.follower_id : undefined),
+        actorAvatarUrl: item.actor_avatar_url || null,
+        connectionRequestId: item.notification_type === "connection"
+          ? (typeof item.payload?.request_id === "string" ? item.payload.request_id : item.entity_id || undefined)
+          : undefined,
+        unread: !item.read_at,
+      }));
+      initialLoadCompleted = true;
+      setActivityNotifications(realtimeEvents.reduce(applyEvent, loaded).slice(0, 100));
+    }).catch((error: unknown) => {
+      if (!active) return;
+      initialLoadCompleted = true;
+      toast.error("Notifications could not be loaded", { description: error instanceof Error ? error.message : "Please try again shortly." });
+    });
+    const unsubscribe = onSubscribeToNotifications?.((raw) => {
+      if (raw.__resync === true) {
+        const versionAtRequest = notificationEventVersion;
+        void onLoadNotifications().then((result) => {
+          if (!active) return;
+          if (result.error) {
+            toast.error("Notifications could not be refreshed", { description: result.error });
+            return;
+          }
+          if (versionAtRequest !== notificationEventVersion) return;
+          setActivityNotifications(result.data.map((item) => ({
+            id: item.id,
+            kind: (item.notification_type === "connection" ? "connection" : item.notification_type === "group" ? "group" : item.notification_type === "follow" ? "follow" : "message") as ActivityNotification["kind"],
+            title: item.title,
+            body: item.body,
+            createdAt: item.created_at,
+            conversationId: item.conversation_id || undefined,
+            actorId: item.actor_id || (typeof item.payload?.follower_id === "string" ? item.payload.follower_id : undefined),
+            actorAvatarUrl: item.actor_avatar_url || null,
+            connectionRequestId: item.notification_type === "connection"
+              ? (typeof item.payload?.request_id === "string" ? item.payload.request_id : item.entity_id || undefined)
+              : undefined,
+            unread: !item.read_at,
+          })).slice(0, 100));
+        }).catch(() => {
+          if (active) toast.error("Notifications could not be refreshed", { description: "Reconnect to Convo and try again." });
+        });
+        return;
+      }
+      notificationEventVersion += 1;
+      if (!initialLoadCompleted) {
+        realtimeEvents.push(raw);
+        if (realtimeEvents.length > 100) realtimeEvents.shift();
+      }
+      setActivityNotifications((current) => applyEvent(current, raw));
     });
     return () => { active = false; unsubscribe?.(); };
   }, [currentUserId, onLoadNotifications, onSubscribeToNotifications]);
@@ -688,6 +949,149 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
       setJoinedGroups((current) => current.includes(groupId) ? current : [...current, groupId]);
       const feedback = groupSuccessCopy(groupName, result.alreadyJoined); toast.success(feedback.title, { description: feedback.description });
     });
+  };
+
+  const renderGroups = () => {
+    const categories = [
+      ["all", "All groups"],
+      ["academic", "Academic"],
+      ["social", "Social"],
+      ["sports", "Sports"],
+      ["technology", "Technology"],
+      ["business", "Business"],
+      ["arts", "Arts"],
+      ["club", "Clubs"],
+      ["project", "Projects"],
+      ["code_tech", "Code & Tech"],
+      ["cruise", "Cruise"],
+    ];
+    const openGroup = (group: typeof liveGroupDirectory[number]) => {
+      setLiveConversations((current) => current.some((conversation) => conversation.id === group.conversation_id)
+        ? current
+        : [{
+          id: group.conversation_id,
+          name: group.title,
+          kind: "group",
+          meta: group.category ? group.category.replace("_", " & ") : "Convo group",
+          message: "Group conversation",
+          tone: "sage",
+          unread: "",
+          groupImageUrl: group.group_image_url,
+        }, ...current]);
+      setSelectedConversationId(group.conversation_id);
+      setActiveView("messages");
+    };
+    const normalizedQuery = groupSearchQuery.trim().toLowerCase();
+    const visibleCampusGroups = groups.filter((group) => {
+      const searchable = `${group.name} ${group.meta}`.toLowerCase();
+      const matchesQuery = !normalizedQuery || searchable.includes(normalizedQuery);
+      const matchesCategory = groupCategoryFilter === "all"
+        || searchable.includes(groupCategoryFilter.replaceAll("_", " "));
+      return matchesQuery && matchesCategory;
+    });
+
+    return (
+      <section className="workspace-view premium-feature-view">
+        <div className="workspace-heading">
+          <div>
+            <span className="eyebrow dark">Convo communities</span>
+            <h1>Find your<br /><em>circle.</em></h1>
+            <p>Discover member-created groups, see who can join, and open conversations for groups you belong to.</p>
+          </div>
+          <button type="button" className="primary-button" onClick={() => setShowGroupComposer(true)}>
+            <Plus size={15} /> Create group
+          </button>
+        </div>
+        <label className="marketplace-search">
+          <Search size={15} />
+          <span className="sr-only">Search groups</span>
+          <input
+            value={groupSearchQuery}
+            onChange={(event) => setGroupSearchQuery(event.target.value)}
+            placeholder="Search groups..."
+          />
+          {groupSearchQuery && <button type="button" aria-label="Clear group search" onClick={() => setGroupSearchQuery("")}><X size={14} /></button>}
+        </label>
+        <div className="marketplace-categories" role="group" aria-label="Group categories">
+          {categories.map(([value, label]) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={groupCategoryFilter === value}
+              className={groupCategoryFilter === value ? "is-active" : ""}
+              onClick={() => setGroupCategoryFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {visibleCampusGroups.length > 0 && (
+          <section className="campus-groups-section" aria-labelledby="campus-groups-heading">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow dark">Campus</span>
+                <h2 id="campus-groups-heading">Member circles</h2>
+              </div>
+            </div>
+            <div className="group-row-list">
+              {visibleCampusGroups.map((group) => {
+                const joined = joinedGroups.includes(group.id);
+                return (
+                  <article className={`group-row ${group.tone}`} key={group.id}>
+                    <span className="group-row-mark" aria-hidden="true"><Users size={17} /></span>
+                    <div>
+                      <span className="eyebrow dark">{group.meta}</span>
+                      <h2>{group.name}</h2>
+                    </div>
+                    <small>{group.members} member{group.members === 1 ? "" : "s"}</small>
+                    <button
+                      type="button"
+                      className={joined ? "outline-button" : "primary-button"}
+                      onClick={() => joinGroup(group.id, group.name)}
+                      disabled={joined || !group.active || !onJoinGroup}
+                    >
+                      {joined ? "Joined" : group.active ? "Join circle" : "Unavailable"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+        {!onSearchGroups
+          ? <div className="premium-empty-state" role="alert"><h2>Group discovery is unavailable.</h2><p>Connect the authenticated group directory before browsing.</p></div>
+          : groupDirectoryLoading
+            ? <div className="event-list event-list-loading" aria-busy="true"><div /><div /><div /></div>
+            : groupDirectoryError
+              ? <div className="premium-empty-state" role="alert"><h2>Groups are unavailable.</h2><p>{groupDirectoryError}</p></div>
+              : liveGroupDirectory.length
+                ? <div className="group-row-list">
+                  {liveGroupDirectory.map((group) => (
+                    <article className="group-row" key={group.conversation_id}>
+                      <span className="group-row-mark" aria-hidden="true">
+                        {group.group_image_url ? <img src={group.group_image_url} alt="" /> : <Users size={17} />}
+                      </span>
+                      <div>
+                        <span className="eyebrow dark">{group.is_member ? "Your circle" : "Convo group"}</span>
+                        <h2>{group.title}</h2>
+                        <p>{group.category ? group.category.replace("_", " & ") : "Community"}</p>
+                      </div>
+                      <small>{group.member_count} member{group.member_count === 1 ? "" : "s"}</small>
+                      {group.is_member
+                        ? <button type="button" className="primary-button" onClick={() => openGroup(group)}><MessageCircle size={14} /> Open group</button>
+                        : group.my_request_status === "pending"
+                          ? <button type="button" className="outline-button" disabled>Request sent</button>
+                          : <button type="button" className="outline-button" onClick={() => void requestToJoinGroup(group.conversation_id, group.title)} disabled={!onRequestGroupJoin}><Plus size={14} /> Request to join</button>}
+                    </article>
+                  ))}
+                </div>
+                : <div className="premium-empty-state">
+                  <span className="empty-orbit"><Users size={22} /></span>
+                  <h2>{groupSearchQuery.trim() ? "No groups match your search." : "No groups to show yet."}</h2>
+                  <p>{groupSearchQuery.trim() ? "Try another name or category." : "Create a group or check back when members have shared their communities."}</p>
+                </div>}
+      </section>
+    );
   };
 
   const createGroupConversation = async (titleValue = groupTitleDraft, selectedMemberIds?: string[], categoryValue = groupCategoryDraft) => {
@@ -881,6 +1285,60 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     setActiveView("messages");
     toast.success(`Conversation with ${student.name} is ready`, { description: "You can message each other now." });
   };
+  const openMemberProfile = async (memberId: string, memberName: string) => {
+    const existing = liveStudents.find((student) => student.id === memberId);
+    if (existing) {
+      setPeekStudent(existing);
+      setActiveView("discover");
+      return;
+    }
+    if (!onSearchStudents) {
+      toast.error("This member profile is unavailable", { description: "Open the student directory to view eligible public profiles." });
+      return;
+    }
+    try {
+      const result = await onSearchStudents(memberName);
+      if (result.error) {
+        toast.error("Couldn’t load this member profile", { description: result.error.message });
+        return;
+      }
+      const profile = result.data.find((student) => student.id === memberId);
+      if (!profile) {
+        toast.error("This member profile isn’t available in the directory");
+        return;
+      }
+      const student: DirectoryStudent = {
+        id: profile.id,
+        studentId: profile.student_id || "",
+        avatarUrl: profile.avatar_url,
+        isSelf: Boolean(profile.is_self),
+        name: profile.display_name,
+        initials: profile.display_name.slice(0, 2).toUpperCase(),
+        programme: profile.programme || "",
+        department: profile.department || "",
+        level: profile.level || "",
+        bio: profile.bio || "",
+        tone: "sage",
+        status: profile.status_text || "",
+        mutual: "",
+      };
+      setPeekStudent(student);
+      setActiveView("discover");
+      if (onLoadStudentFollowState) {
+        const followState = await onLoadStudentFollowState([memberId]);
+        if (!followState.error) {
+          const loaded = followState.data[0];
+          if (loaded) setStudentFollowState((state) => ({ ...state, [memberId]: {
+            follower_count: loaded.follower_count,
+            following_count: loaded.following_count,
+            followed_by_me: loaded.followed_by_me,
+          } }));
+        }
+      }
+    } catch (caught) {
+      toast.error("Couldn’t load this member profile", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    }
+  };
   const cancelRequest = async (student: DirectoryStudent) => {
     if (!onCancelConnectionRequest) { toast("Request cancellation will activate when connection actions are connected."); return; }
     const result = await onCancelConnectionRequest(student.id);
@@ -901,6 +1359,100 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     }
     toast("Live connection requests are not connected yet.");
   };
+  const toggleStudentFollow = async (student: DirectoryStudent) => {
+    const current = studentFollowState[student.id]?.followed_by_me ?? false;
+    if (!onSetStudentFollow || followBusyId) return;
+    setFollowBusyId(student.id);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await onSetStudentFollow(student.id, !current);
+    } catch (caught) {
+      setFollowBusyId("");
+      toast.error(current ? "Couldn’t unfollow this student" : "Couldn’t follow this student", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+      return;
+    }
+    setFollowBusyId("");
+    if (!result.ok) {
+      toast.error(current ? "Couldn’t unfollow this student" : "Couldn’t follow this student", { description: result.error || "Please try again shortly." });
+      return;
+    }
+    setStudentFollowState((state) => {
+      const target = state[student.id] || { follower_count: 0, following_count: 0, followed_by_me: false };
+      const self = state[currentUserId] || { follower_count: 0, following_count: 0, followed_by_me: false };
+      const delta = current ? -1 : 1;
+      return {
+        ...state,
+        [student.id]: { ...target, followed_by_me: !current, follower_count: Math.max(0, target.follower_count + delta) },
+        [currentUserId]: { ...self, following_count: Math.max(0, self.following_count + delta) },
+      };
+    });
+    setFollowingStudents((students) => current
+      ? students.filter((item) => item.id !== student.id)
+      : [student, ...students.filter((item) => item.id !== student.id)]);
+    toast.success(current ? `You unfollowed ${student.name}` : `You’re following ${student.name}`, {
+      description: "Following is separate from connections and does not grant messaging or private Story access.",
+    });
+  };
+  const updateStudentFollowPrivacy = async (field: keyof MtuStudentFollowListVisibility, value: MtuStudentFollowListVisibility[typeof field]) => {
+    await saveStudentFollowPrivacy({ ...studentFollowPrivacy, [field]: value });
+  };
+  const saveStudentFollowPrivacy = async (next: MtuStudentFollowListVisibility) => {
+    if (!onSetStudentFollowPrivacy || followPrivacySaving) return;
+    setFollowPrivacySaving(true);
+    try {
+      const result = await onSetStudentFollowPrivacy(next);
+      if (!result.ok) {
+        toast.error("Profile privacy could not be saved", { description: result.error || "Please try again shortly." });
+        return;
+      }
+      setStudentFollowPrivacy(next);
+      toast.success("Follow-list privacy updated");
+    } catch (caught) {
+      toast.error("Profile privacy could not be saved", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    } finally {
+      setFollowPrivacySaving(false);
+    }
+  };
+  const removeStudentFollower = async (student: DirectoryStudent) => {
+    if (!onRemoveStudentFollower || followBusyId) return;
+    setFollowBusyId(student.id);
+    try {
+      const result = await onRemoveStudentFollower(student.id);
+      if (!result.ok) {
+        toast.error("Follower could not be removed", { description: result.error || "Please try again shortly." });
+        return;
+      }
+      setFollowingStudents((current) => current.filter((entry) => entry.id !== student.id));
+      setStudentFollowState((current) => {
+        const self = current[currentUserId];
+        return self ? { ...current, [currentUserId]: { ...self, follower_count: Math.max(0, self.follower_count - 1) } } : current;
+      });
+      toast.success(`${student.name} was removed from your followers`);
+    } catch (caught) {
+      toast.error("Follower could not be removed", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    } finally {
+      setFollowBusyId("");
+    }
+  };
+  const setStudentContentRestriction = async (student: DirectoryStudent, restricted: boolean) => {
+    if (!onSetStudentContentRestriction || contentRestrictionBusyId) return;
+    setContentRestrictionBusyId(student.id);
+    try {
+      const result = await onSetStudentContentRestriction(student.id, restricted);
+      if (!result.ok) {
+        toast.error(restricted ? "Content restriction could not be saved" : "Content restriction could not be removed", { description: result.error || "Please try again shortly." });
+        return;
+      }
+      setStudentContentRestrictions((current) => restricted
+        ? [{ user_id: student.id, display_name: student.name, avatar_url: student.avatarUrl, created_at: new Date().toISOString() }, ...current.filter((entry) => entry.user_id !== student.id)]
+        : current.filter((entry) => entry.user_id !== student.id));
+      toast.success(restricted ? `${student.name} can no longer see your Feed posts or Public Stories` : `${student.name} can see your Feed posts and Public Stories again`);
+    } catch (caught) {
+      toast.error("Content restriction could not be saved", { description: caught instanceof Error ? caught.message : "Please try again shortly." });
+    } finally {
+      setContentRestrictionBusyId("");
+    }
+  };
 
   const suggestions = groups.slice(0, 3);
   const academicProgramme = programme || major || "";
@@ -913,12 +1465,18 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const tiltSuggestionCard = (event: React.PointerEvent<HTMLElement>) => { const card = event.currentTarget; const rect = card.getBoundingClientRect(); const x = (event.clientX - rect.left) / rect.width - 0.5; const y = (event.clientY - rect.top) / rect.height - 0.5; card.style.setProperty("--tilt-x", `${(-y * 4).toFixed(2)}deg`); card.style.setProperty("--tilt-y", `${(x * 5).toFixed(2)}deg`); card.style.setProperty("--lift", "-3px"); };
   const resetSuggestionCard = (event: React.PointerEvent<HTMLElement>) => { const card = event.currentTarget; card.style.setProperty("--tilt-x", "0deg"); card.style.setProperty("--tilt-y", "0deg"); card.style.setProperty("--lift", "0px"); };
   const directorySource = liveStudents;
-  const filteredStudents = onSearchStudents ? directorySource.filter((student) => !student.isSelf && student.id !== currentUserId) : [];
+  const filteredStudents = onSearchStudents
+    ? (followingOnly ? followingStudents : directorySource).filter((student) => {
+      const query = directoryQuery.trim().toLowerCase();
+      return (followingOnly || (!student.isSelf && student.id !== currentUserId))
+        && (!query || `${student.name} ${student.studentId} ${student.programme} ${student.department} ${student.level}`.toLowerCase().includes(query));
+    })
+    : [];
   const firstName = displayName.split(" ")[0] || "Your";
   const unreadConversationCount = liveConversations.reduce((total, conversation) => total + (Number(conversation.unread) || 0), 0);
   const unreadNotificationCount = activityNotifications.filter((notification) => notification.unread).length;
 
-  const openView = (view: DashboardView) => { setActiveView(view); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const openView = (view: DashboardView) => { setActiveView(view === "campus" ? "feed" : view); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const saveProfileDraft = async (event: React.FormEvent) => { event.preventDefault(); if (!onUpdateProfile || profileSaving) return; setProfileSaving(true); const result = await onUpdateProfile(profileDraft); setProfileSaving(false); if (!result.ok) { toast.error("We couldn’t update your profile", { description: result.error || "Please try again shortly." }); return; } setShowEditProfile(false); toast.success("Profile updated", { description: "Your student identity is current." }); };
   const updatePrivacy = async (field: keyof ProfileVisibility) => { if (!onUpdatePrivacy || privacySaving) return; const next = { ...visibilityDraft, [field]: !visibilityDraft[field] }; setVisibilityDraft(next); setPrivacySaving(true); const result = await onUpdatePrivacy(next); setPrivacySaving(false); if (!result.ok) { setVisibilityDraft(visibilityDraft); toast.error("We couldn’t update privacy", { description: result.error || "Please try again shortly." }); return; } const label = field === "allow_public_id_copy" ? "Public ID copying" : field[0].toUpperCase() + field.slice(1); toast.success("Privacy updated", { description: `${label} is now ${next[field] ? "on" : "off"}.` }); };
   React.useEffect(() => {
@@ -977,28 +1535,38 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     { view: "discover", icon: <Search size={17} /> },
     { view: "messages", icon: <MessageCircle size={17} />, badge: unreadConversationCount > 0 ? String(unreadConversationCount) : undefined },
     { view: "groups", icon: <Users size={17} /> },
-    { view: "notifications", icon: <Bell size={17} />, badge: unreadNotificationCount > 0 ? String(unreadNotificationCount) : undefined },
+    { view: "feed", icon: <Compass size={17} /> },
     { view: "profile", icon: <UserRound size={17} /> },
     { view: "assistant", icon: <Bot size={17} /> },
-    { view: "vault", icon: <Layers3 size={17} /> },
   ];
   const sidebarNavItems: Array<{ view: DashboardView; icon: React.ReactNode; badge?: string }> = [
     ...primaryNavItems,
+    { view: "marketplace", icon: <Store size={17} /> },
+    { view: "notifications", icon: <Bell size={17} />, badge: unreadNotificationCount > 0 ? String(unreadNotificationCount) : undefined },
+    { view: "vault", icon: <Layers3 size={17} /> },
     { view: "events", icon: <CalendarDays size={17} /> },
     { view: "files", icon: <FolderOpen size={17} /> },
     { view: "settings", icon: <SunMoon size={17} /> },
     { view: "id", icon: <IdCard size={17} /> },
   ];
+  const dockMoreItems: Array<{ view: DashboardView; title: string; description: string }> = [
+    { view: "marketplace", title: "Marketplace", description: "Peer-to-peer student listings" },
+    { view: "vault", title: "Convo Vault", description: "Private notes and study sources" },
+    { view: "events", title: "Events", description: "Group events, polls, tasks, and announcements" },
+    { view: "files", title: "Files", description: "Shared conversation attachments" },
+    { view: "id", title: "Digital ID", description: "Your Convo student identity" },
+    { view: "settings", title: "Settings", description: "Personalize your space" },
+  ];
 
   const renderHome = () => <>
     <section className="dashboard-hero welcome-card"><div className="welcome-content"><div className="dashboard-kicker"><Compass size={15} /> YOUR CONVO</div><h1>Welcome back,<br /><em>{displayName || "there"}.</em></h1><p>Your {major || "programme"} circles are ready. Find a conversation, join a group, or share something from your day.</p><div className="dashboard-quick-actions"><button className="primary-button" onClick={() => openView("messages")}><MessageCircle size={16} /> Start a conversation <ArrowRight size={15} /></button></div><div className="dashboard-hero-meta welcome-footer">{level || studentId || department ? <><span><span className="pulse-dot" /> {[level, studentId].filter(Boolean).join(" · ")}</span>{department && <span>{department}</span>}</> : <span className="profile-setup-hint"><span className="pulse-dot" /> Complete your profile to personalize your circles.</span>}</div></div><div className="bubbles-container" aria-hidden="true"><div className="welcome-bubble-art" aria-hidden="true" /></div></section>
     <section className="dashboard-quick-panel"><div><span className="eyebrow dark">Move through Convo</span><strong>Pick up where you left off.</strong></div><div className="quick-panel-actions"><button onClick={() => openView("messages")}><MessageCircle size={15} /><span><b>Messages</b><small>{unreadConversationCount ? `${unreadConversationCount} unread` : "Open your conversations"}</small></span><ArrowRight size={14} /></button><button onClick={() => openView("discover")}><Users size={15} /><span><b>Classmates</b><small>Find your programme circle</small></span><ArrowRight size={14} /></button><button onClick={() => openView("profile")}><UserRound size={15} /><span><b>Your profile</b><small>{studentId ? "Keep your details current" : "Complete your MTU identity"}</small></span><ArrowRight size={14} /></button></div></section>
-    <section className="dashboard-story-strip"><div className="story-intro"><span className="eyebrow dark">Campus now</span><b>Your circles will appear here</b><button className="text-link" onClick={() => openView("discover")}>Find classmates <ArrowRight size={14} /></button></div><div className="story-avatars"><span className="story-empty-note">No stories shared yet.</span></div></section>{onSearchStudents && !directoryLoading && <section className="dashboard-panel suggested-connections-panel"><div className="panel-heading"><div><span className="eyebrow dark">Suggested connections</span><h2>People in your orbit</h2></div><div className="suggestion-filter" role="group" aria-label="Filter suggested connections"><button type="button" className={suggestionFilter === "programme" ? "is-active" : ""} onClick={() => setSuggestionFilter("programme")}>Programme</button><button type="button" className={suggestionFilter === "college" ? "is-active" : ""} onClick={() => setSuggestionFilter("college")}>College</button></div><button className="text-link" onClick={() => openView("discover")}>See directory <ArrowRight size={14} /></button></div>{suggestedConnections.length ? <><div className="suggested-connections">{visibleSuggestedConnections.map((student) => { const state = requestStates[student.id] || "idle"; return <article className="suggested-connection" key={student.id} onPointerMove={tiltSuggestionCard} onPointerLeave={resetSuggestionCard}>    <button type="button" className={`student-avatar ${student.tone}`} onClick={() => setPeekStudent(student)} aria-label={`Preview ${student.name}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></button><div><b>{student.name}</b><small>{[student.programme, student.level].filter(Boolean).join(" · ") || "Academic details not shared"}</small></div><div className={`student-request-wrap ${state}`}><button className={`student-request ${state}`} onClick={() => state === "pending" ? void cancelRequest(student) : void sendRequest(student)}>{state === "pending" ? <><Check size={14} /><span className="request-status-label">Pending</span><span className="cancel-request-label">Cancel Request</span></> : state === "connected" ? <><Check size={14} /> Connected</> : "Connect"}</button></div></article>; })}{loadingMoreSuggestions && Array.from({ length: 3 }).map((_, index) => <div className="suggested-connection suggestion-skeleton" key={`skeleton-${index}`} aria-label="Loading student"><span /><span /><i /></div>)}</div>{suggestionLimit < suggestedConnections.length && !loadingMoreSuggestions && <button type="button" className="load-more-suggestions" onClick={loadMoreSuggestions}>Load More <ChevronRight size={14} /></button>}</> : <div className="dashboard-empty">No classmates match your programme yet. Your suggestions will appear as verified profiles join Convo.</div>}{peekStudent && <div className="quick-peek-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="quick-peek-modal" role="dialog" aria-modal="true" aria-label={`Public profile preview for ${peekStudent.name}`} onClick={(event) => event.stopPropagation()}><button type="button" className="quick-peek-close" onClick={() => setPeekStudent(null)} aria-label="Close profile preview"><X size={16} /></button><span className="eyebrow dark">Quick peek</span><h3>{peekStudent.name}</h3>    <StudentIdCard nickname={peekStudent.name} displayName={peekStudent.name} studentId={peekStudent.studentId} avatarUrl={peekStudent.avatarUrl || undefined} programme={peekStudent.programme} college={peekStudent.department} level={peekStudent.level} bio={peekStudent.bio} /></section></div>}</section>}
-    <section className="dashboard-grid"><div className="dashboard-panel feed-panel"><div className="panel-heading"><div><span className="eyebrow dark">Campus pulse</span><h2>For your circles</h2></div><button className="text-link" onClick={() => openView("messages")}>View all <ArrowRight size={14} /></button></div>{posts.length ? posts.slice(0, 3).map((post, index) => <article className="dashboard-post" style={{ "--delay": `${index * 80}ms` } as React.CSSProperties} key={post.id}><span className={`feed-avatar ${post.tone}`}>{post.author_name.slice(0, 2).toUpperCase()}</span><div><b>{post.author_name}</b><small>{post.author_meta}</small><p>{post.body}</p><div className="post-actions"><button aria-label="React to post">♡ {post.likes}</button><button onClick={() => openView("messages")}><MessageCircle size={13} /> Reply</button></div></div><button className="reaction-button" aria-label="React to post">♡</button></article>) : <div className="dashboard-empty">Your feed will come alive as your circles start sharing.</div>}</div><div className="dashboard-panel group-panel"><div className="panel-heading"><div><span className="eyebrow dark">Suggested for you</span><h2>Find your people</h2></div><button className="icon-button subtle" aria-label="More group options" onClick={() => openView("discover")}><MoreHorizontal size={17} /></button></div><div className="suggested-groups">{suggestions.map((group, index) => { const joined = joinedGroups.includes(String(group.id)); return <button className={`suggested-group ${group.tone} ${joined ? "is-joined" : ""}`} key={group.id} style={{ "--delay": `${index * 90}ms` } as React.CSSProperties} onClick={() => joinGroup(String(group.id), group.name)} aria-pressed={joined}><span className="group-icon">{joined ? <Check size={17} /> : <Users size={17} />}</span><span><b>{group.name}</b><small>{joined ? "You’re in · Welcome to the circle" : `${group.meta}${group.members ? ` · ${group.members} members` : ""}`}</small></span>{joined ? <span className="joined-badge">Joined</span> : <ArrowRight size={15} />}</button>; })}</div></div></section>
+    <section className="dashboard-story-strip"><div className="story-intro"><span className="eyebrow dark">Community Feed</span><b>Posts and Stories, together.</b><button className="text-link" onClick={() => openView("feed")}>Open Feed <ArrowRight size={14} /></button></div><div className="story-avatars"><span className="story-empty-note">Member posts and public Stories live in Feed.</span></div></section>{onSearchStudents && !directoryLoading && <section className="dashboard-panel suggested-connections-panel"><div className="panel-heading"><div><span className="eyebrow dark">Suggested connections</span><h2>People in your orbit</h2></div><div className="suggestion-filter" role="group" aria-label="Filter suggested connections"><button type="button" className={suggestionFilter === "programme" ? "is-active" : ""} onClick={() => setSuggestionFilter("programme")}>Programme</button><button type="button" className={suggestionFilter === "college" ? "is-active" : ""} onClick={() => setSuggestionFilter("college")}>College</button></div><button className="text-link" onClick={() => openView("discover")}>See directory <ArrowRight size={14} /></button></div>{suggestedConnections.length ? <><div className="suggested-connections">{visibleSuggestedConnections.map((student) => { const state = requestStates[student.id] || "idle"; return <article className="suggested-connection" key={student.id} onPointerMove={tiltSuggestionCard} onPointerLeave={resetSuggestionCard}>    <button type="button" className={`student-avatar ${student.tone}`} onClick={() => setPeekStudent(student)} aria-label={`Preview ${student.name}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></button><div><b>{student.name}</b><small>{[student.programme, student.level].filter(Boolean).join(" · ") || "Academic details not shared"}</small></div><div className={`student-request-wrap ${state}`}><button className={`student-request ${state}`} onClick={() => state === "pending" ? void cancelRequest(student) : void sendRequest(student)}>{state === "pending" ? <><Check size={14} /><span className="request-status-label">Pending</span><span className="cancel-request-label">Cancel Request</span></> : state === "connected" ? <><Check size={14} /> Connected</> : "Connect"}</button></div></article>; })}{loadingMoreSuggestions && Array.from({ length: 3 }).map((_, index) => <div className="suggested-connection suggestion-skeleton" key={`skeleton-${index}`} aria-label="Loading student"><span /><span /><i /></div>)}</div>{suggestionLimit < suggestedConnections.length && !loadingMoreSuggestions && <button type="button" className="load-more-suggestions" onClick={loadMoreSuggestions}>Load More <ChevronRight size={14} /></button>}</> : <div className="dashboard-empty">No classmates match your programme yet. Your suggestions will appear as verified profiles join Convo.</div>}{peekStudent && <div className="quick-peek-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="quick-peek-modal" role="dialog" aria-modal="true" aria-label={`Public profile preview for ${peekStudent.name}`} onClick={(event) => event.stopPropagation()}><button type="button" className="quick-peek-close" onClick={() => setPeekStudent(null)} aria-label="Close profile preview"><X size={16} /></button><span className="eyebrow dark">Quick peek</span><h3>{peekStudent.name}</h3>    <StudentIdCard nickname={peekStudent.name} displayName={peekStudent.name} studentId={peekStudent.studentId} avatarUrl={peekStudent.avatarUrl || undefined} programme={peekStudent.programme} college={peekStudent.department} level={peekStudent.level} bio={peekStudent.bio} /></section></div>}</section>}
+    <section className="dashboard-grid"><div className="dashboard-panel feed-panel"><div className="panel-heading"><div><span className="eyebrow dark">Campus pulse</span><h2>For your circles</h2></div><button className="text-link" onClick={() => openView("campus")}>View all <ArrowRight size={14} /></button></div>{posts.length ? posts.slice(0, 3).map((post, index) => <article className="dashboard-post" style={{ "--delay": `${index * 80}ms` } as React.CSSProperties} key={post.id}><span className={`feed-avatar ${post.tone}`}>{post.author_name.slice(0, 2).toUpperCase()}</span><div><b>{post.author_name}</b><small>{post.author_meta}</small><p>{post.body}</p><div className="post-actions"><button aria-label="React to post">♡ {post.likes}</button><button onClick={() => openView("messages")}><MessageCircle size={13} /> Reply</button></div></div><button className="reaction-button" aria-label="React to post">♡</button></article>) : <div className="dashboard-empty">Your feed will come alive as your circles start sharing.</div>}</div><div className="dashboard-panel group-panel"><div className="panel-heading"><div><span className="eyebrow dark">Suggested for you</span><h2>Find your people</h2></div><button className="icon-button subtle" aria-label="More group options" onClick={() => openView("discover")}><MoreHorizontal size={17} /></button></div><div className="suggested-groups">{suggestions.map((group, index) => { const joined = joinedGroups.includes(String(group.id)); return <button className={`suggested-group ${group.tone} ${joined ? "is-joined" : ""}`} key={group.id} style={{ "--delay": `${index * 90}ms` } as React.CSSProperties} onClick={() => joinGroup(String(group.id), group.name)} aria-pressed={joined}><span className="group-icon">{joined ? <Check size={17} /> : <Users size={17} />}</span><span><b>{group.name}</b><small>{joined ? "You’re in · Welcome to the circle" : `${group.meta}${group.members ? ` · ${group.members} members` : ""}`}</small></span>{joined ? <span className="joined-badge">Joined</span> : <ArrowRight size={15} />}</button>; })}</div></div></section>
     <section className="dashboard-lower-grid"><button className="dashboard-feature-card feature-library" onClick={() => openView("discover")}><span className="feature-icon"><Sparkles size={18} /></span><span className="eyebrow dark">Campus directory</span><strong>Find your<br /><em>next conversation.</em></strong><small>Discover verified classmates in your programme and college.</small><ArrowRight size={16} /></button><button className="dashboard-feature-card feature-mtu" onClick={() => openView("discover")}><span className="feature-icon"><ShieldCheck size={18} /></span><span className="eyebrow dark">MTU guide</span><strong>Made for the<br /><em>way campus moves.</em></strong><small>Explore programmes, colleges, circles, and the people making MTU feel connected.</small><ArrowRight size={16} /></button></section>
   </>;
 
-  const renderDiscover = () => <section className="workspace-view discover-view"><div className="workspace-heading"><div><span className="eyebrow dark">The directory</span><h1>Find your<br /><em>people.</em></h1><p>Search by a public student ID, name, programme, department, or level. MTU email addresses stay private.</p></div><div className="workspace-stat"><strong>{filteredStudents.length}</strong><span>matching profiles</span></div></div><div className="directory-search"><Search size={19} /><input value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="Try MTU-26-7K4Q2 or Computer Science" aria-label="Global search" /><kbd>⌘ K</kbd></div><div className="directory-filters"><button className="filter-chip is-active" onClick={() => setDirectoryQuery("")}>All students</button>{major && <button className="filter-chip" onClick={() => setDirectoryQuery(major)}>{major}</button>}{level && <button className="filter-chip" onClick={() => setDirectoryQuery(level)}>{level}</button>}{department && <button className="filter-chip" onClick={() => setDirectoryQuery(department)}>{department}</button>}</div>{directoryLoading && <div className="directory-empty"><span className="pulse-dot" /><span>Searching MTU profiles…</span></div>}{directoryError && <div className="directory-empty"><strong>Directory needs one more setup step.</strong><span>Apply the live student-directory SQL in your Supabase project, then try again.</span></div>}<div className="directory-grid">{filteredStudents.map((student) => { const state = requestStates[student.id] || "idle"; const menuOpen = openStudentMenuId === student.id; return   <article className="student-card" key={student.id}><div className={`student-avatar ${student.tone}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></div><div className="student-card-main"><div className="student-card-name"><div><h3>{student.name}</h3>{student.status && <span>{student.status}</span>}</div><div className="student-card-menu"><button className="icon-button subtle" aria-label={`More options for ${student.name}`} aria-expanded={menuOpen} onClick={() => setOpenStudentMenuId(menuOpen ? "" : student.id)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="student-card-popover" role="menu"><button role="menuitem" onClick={() => { setPeekStudent(student); setOpenStudentMenuId(""); }}><UserRound size={14} /> View profile</button>{student.studentId && <button role="menuitem" onClick={() => { void navigator.clipboard?.writeText(student.studentId); setOpenStudentMenuId(""); }}><IdCard size={14} /> Copy student ID</button>}{state === "connected" ? <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void startConversation(student); }}><MessageCircle size={14} /> Message</button> : <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void sendRequest(student); }}><Users size={14} /> {state === "pending" ? "Request pending" : "Connect"}</button>}</div>}</div></div>{(student.programme || student.level) && <p>{[student.programme, student.level].filter(Boolean).join(" · ")}</p>}{state === "connected" ? <button className="student-request connected" onClick={() => void startConversation(student)}><MessageCircle size={15} /> Message</button> : <button className={`student-request ${state}`} onClick={() => void sendRequest(student)}>{state === "pending" ? <><Check size={15} /> Request sent</> : <><Send size={15} /> Connect</>}</button>}</div></article>; })}</div>{!filteredStudents.length && <div className="directory-empty"><Search size={22} /><strong>No student found yet.</strong><span>Try the public ID, programme, or level.</span></div>}{peekStudent && <div className="student-profile-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="student-profile-sheet" role="dialog" aria-modal="true" aria-labelledby="student-profile-title" onClick={(event) => event.stopPropagation()}><button className="student-profile-close" aria-label="Close profile" onClick={() => setPeekStudent(null)}>×</button>  <div className={`student-profile-avatar ${peekStudent.tone}`}>{peekStudent.avatarUrl ? <img src={peekStudent.avatarUrl} alt="" /> : peekStudent.initials}</div><span className="eyebrow dark">MTU student profile</span><h2 id="student-profile-title">{peekStudent.name}</h2>{peekStudent.status && <p className="student-profile-status">{peekStudent.status}</p>}<div className="student-profile-facts">{peekStudent.programme && <div><span>Programme</span><b>{peekStudent.programme}</b></div>}{peekStudent.department && <div><span>College / department</span><b>{peekStudent.department}</b></div>}{peekStudent.level && <div><span>Level</span><b>{peekStudent.level}</b></div>}</div><div className="student-profile-actions">{(requestStates[peekStudent.id] || "idle") === "connected" ? <button className="primary-button" onClick={() => void startConversation(peekStudent)}><MessageCircle size={15} /> Message</button> : <button className="primary-button" onClick={() => void sendRequest(peekStudent)}><Users size={15} /> Connect</button>}<button className="outline-button" onClick={() => setPeekStudent(null)}>Close</button></div></section></div>}</section>;
+  const renderDiscover = () => <section className="workspace-view discover-view"><div className="workspace-heading"><div><span className="eyebrow dark">The directory</span><h1>Find your<br /><em>people.</em></h1><p>Search by a public student ID, name, programme, department, or level. MTU email addresses stay private.</p></div><div className="workspace-stat"><strong>{filteredStudents.length}</strong><span>matching profiles</span></div></div><div className="directory-search"><Search size={19} /><input value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="Try MTU-26-7K4Q2 or Computer Science" aria-label="Global search" /><kbd>⌘ K</kbd></div><div className="directory-filters"><button className={`filter-chip ${!followingOnly ? "is-active" : ""}`} aria-pressed={!followingOnly} onClick={() => { setFollowingOnly(false); setDirectoryQuery(""); }}>All students</button>{onSetStudentFollow && <button className={`filter-chip ${followingOnly ? "is-active" : ""}`} aria-pressed={followingOnly} onClick={() => setFollowingOnly((current) => !current)}>Following · {studentFollowState[currentUserId]?.following_count || 0}</button>}{major && <button className="filter-chip" onClick={() => { setFollowingOnly(false); setDirectoryQuery(major); }}>{major}</button>}{level && <button className="filter-chip" onClick={() => { setFollowingOnly(false); setDirectoryQuery(level); }}>{level}</button>}{department && <button className="filter-chip" onClick={() => { setFollowingOnly(false); setDirectoryQuery(department); }}>{department}</button>}</div>{directoryLoading && <div className="directory-empty"><span className="pulse-dot" /><span>Searching MTU profiles…</span></div>}{directoryError && <div className="directory-empty"><strong>Directory needs one more setup step.</strong><span>Apply the live student-directory SQL in your Supabase project, then try again.</span></div>}<div className="directory-grid">{filteredStudents.map((student) => { const state = requestStates[student.id] || "idle"; const follow = studentFollowState[student.id]; const isFollowing = Boolean(follow?.followed_by_me); const menuOpen = openStudentMenuId === student.id; return   <article className="student-card" key={student.id}><div className={`student-avatar ${student.tone}`}>{student.avatarUrl ? <img src={student.avatarUrl} alt="" /> : student.initials}<span className={student.status === "Online now" ? "is-online" : ""} /></div><div className="student-card-main"><div className="student-card-name"><div><h3>{student.name}</h3>{student.status && <span>{student.status}</span>}</div><div className="student-card-menu"><button className="icon-button subtle" aria-label={`More options for ${student.name}`} aria-expanded={menuOpen} onClick={() => setOpenStudentMenuId(menuOpen ? "" : student.id)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="student-card-popover" role="menu"><button role="menuitem" onClick={() => { setPeekStudent(student); setOpenStudentMenuId(""); }}><UserRound size={14} /> View profile</button>{student.studentId && <button role="menuitem" onClick={() => { void navigator.clipboard?.writeText(student.studentId); setOpenStudentMenuId(""); }}><IdCard size={14} /> Copy student ID</button>}{state === "connected" ? <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void startConversation(student); }}><MessageCircle size={14} /> Message</button> : <button role="menuitem" onClick={() => { setOpenStudentMenuId(""); void sendRequest(student); }}><Users size={14} /> {state === "pending" ? "Request pending" : "Connect"}</button>}</div>}</div></div>{(student.programme || student.level) && <p>{[student.programme, student.level].filter(Boolean).join(" · ")}</p>}{follow && <small className="student-follow-count">{follow.follower_count} followers · {follow.following_count} following</small>}<div className="student-card-actions">{state === "connected" ? <button className="student-request connected" onClick={() => void startConversation(student)}><MessageCircle size={15} /> Message</button> : <button className={`student-request ${state}`} onClick={() => void sendRequest(student)}>{state === "pending" ? <><Check size={15} /> Request sent</> : <><Send size={15} /> Connect</>}</button>}{onSetStudentFollow && <button className={`student-follow-button ${isFollowing ? "is-following" : ""}`} type="button" aria-pressed={isFollowing} disabled={followBusyId === student.id} onClick={() => void toggleStudentFollow(student)}>{isFollowing ? "Following" : "Follow"}</button>}</div></div></article>; })}</div>{!filteredStudents.length && <div className="directory-empty"><Search size={22} /><strong>{followingOnly ? "You aren’t following anyone here yet." : "No student found yet."}</strong><span>{followingOnly ? "Search the directory and follow classmates to see them here." : "Try the public ID, programme, or level."}</span></div>}{peekStudent && <div className="student-profile-backdrop" role="presentation" onClick={() => setPeekStudent(null)}><section className="student-profile-sheet" role="dialog" aria-modal="true" aria-labelledby="student-profile-title" onClick={(event) => event.stopPropagation()}><button className="student-profile-close" aria-label="Close profile" onClick={() => setPeekStudent(null)}>×</button>  <div className={`student-profile-avatar ${peekStudent.tone}`}>{peekStudent.avatarUrl ? <img src={peekStudent.avatarUrl} alt="" /> : peekStudent.initials}</div><span className="eyebrow dark">MTU student profile</span><h2 id="student-profile-title">{peekStudent.name}</h2>{peekStudent.status && <p className="student-profile-status">{peekStudent.status}</p>}<div className="student-profile-facts">{peekStudent.programme && <div><span>Programme</span><b>{peekStudent.programme}</b></div>}{peekStudent.department && <div><span>College / department</span><b>{peekStudent.department}</b></div>}{peekStudent.level && <div><span>Level</span><b>{peekStudent.level}</b></div>}{studentFollowState[peekStudent.id] && <div><span>Social following</span><b>{studentFollowState[peekStudent.id].follower_count} followers · {studentFollowState[peekStudent.id].following_count} following</b></div>}</div><div className="student-profile-actions">{(requestStates[peekStudent.id] || "idle") === "connected" ? <button className="primary-button" onClick={() => void startConversation(peekStudent)}><MessageCircle size={15} /> Message</button> : <button className="primary-button" onClick={() => void sendRequest(peekStudent)}><Users size={15} /> Connect</button>}{onSetStudentFollow && <button className={`student-follow-button ${studentFollowState[peekStudent.id]?.followed_by_me ? "is-following" : ""}`} type="button" aria-pressed={Boolean(studentFollowState[peekStudent.id]?.followed_by_me)} disabled={followBusyId === peekStudent.id} onClick={() => void toggleStudentFollow(peekStudent)}>{studentFollowState[peekStudent.id]?.followed_by_me ? "Following" : "Follow"}</button>}<button className="outline-button" onClick={() => setPeekStudent(null)}>Close</button></div></section></div>}</section>;
 
   React.useEffect(() => {
     if (!onLoadConversations) return;
@@ -2239,11 +2807,18 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
   const pendingRequests = connectionRequests.filter((request) => request.direction === "received" && request.status === "pending");
   const renderNotifications = () => {
     const items = activityNotifications;
+    const representedRequestIds = new Set(items
+      .map((item) => item.connectionRequestId)
+      .filter((id): id is string => Boolean(id)));
+    const visiblePendingRequests = pendingRequests.filter((request) => !representedRequestIds.has(request.id));
     const openNotification = async (item: ActivityNotification) => {
       if (item.conversationId) {
         setSelectedConversationId(item.conversationId);
         setActiveView("messages");
         void onSetConversationRailState?.(item.conversationId, null, null, null, false);
+      }
+      if (item.kind === "follow" && item.actorId) {
+        void openMemberProfile(item.actorId, item.title.replace(/ followed you$/, ""));
       }
       if (!onMarkNotificationRead) {
         toast.error("This notification could not be dismissed", { description: "Notification storage is not connected." });
@@ -2276,12 +2851,55 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
         toast.error("Notifications could not be cleared", { description: error instanceof Error ? error.message : "Please try again shortly." });
       }
     };
-    return <section className="workspace-view notifications-view"><div className="workspace-heading"><div><span className="eyebrow dark">A little movement</span><h1>Your<br /><em>notifications.</em></h1><p>Messages, calls, connection requests, and group activity appear here.</p></div><div className="workspace-heading-actions"><button type="button" className="outline-button" onClick={() => void clearActivity()} disabled={activityNotifications.length === 0}>Clear activity</button></div></div><div className="notification-stack">{items.length ? items.map((item) => <article className={`notification-card ${item.unread ? "is-unread" : ""}`} key={item.id} onClick={() => void openNotification(item)}><span className="notification-mark rose">{item.kind === "connection" ? <Users size={16} /> : item.kind === "group" ? <Bell size={16} /> : <MessageCircle size={16} />}</span><span><b>{item.title}</b><small>{item.body}</small><small>{new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small></span>{item.kind === "connection" ? <button type="button" className="primary-button" onClick={(event) => { event.stopPropagation(); void openNotification(item); const request = pendingRequests.find((candidate) => candidate.id === item.connectionRequestId); if (request) void acceptRequest(request); }}>Accept</button> : <ArrowRight size={16} aria-hidden="true" />}</article>) : <div className="directory-empty"><Bell size={22} /><strong>You’re all caught up.</strong><span>Messages, calls, requests, and group updates will appear here.</span></div>}</div></section>;
+    return <section className="workspace-view notifications-view"><div className="workspace-heading"><div><span className="eyebrow dark">A little movement</span><h1>Your<br /><em>notifications.</em></h1><p>Messages, calls, follows, connection requests, and group activity appear here.</p></div><div className="workspace-heading-actions"><button type="button" className="outline-button" onClick={() => void clearActivity()} disabled={activityNotifications.length === 0}>Clear activity</button></div></div><div className="notification-stack">{visiblePendingRequests.map((request) => {
+      const requesterName = request.requester_display_name?.trim() || "An MTU student";
+      return <article className="notification-card is-unread" key={`connection-request:${request.id}`}>
+        <span className="notification-mark rose"><Users size={16} /></span>
+        <span><b>{requesterName} wants to connect</b><small>{requesterName} sent you a connection request.</small></span>
+        <button type="button" className="primary-button" onClick={() => void acceptRequest(request)}>Accept</button>
+      </article>;
+    })}{items.length ? items.map((item) => <article className={`notification-card ${item.unread ? "is-unread" : ""}`} key={item.id} onClick={() => void openNotification(item)}><span className="notification-mark rose">{item.kind === "follow" && item.actorAvatarUrl ? <img src={item.actorAvatarUrl} alt="" /> : item.kind === "follow" ? <UserRound size={16} /> : item.kind === "connection" ? <Users size={16} /> : item.kind === "group" ? <Bell size={16} /> : <MessageCircle size={16} />}</span><span><b>{item.title}</b><small>{item.body}</small>{item.kind === "follow" && <small>Open profile</small>}<small>{new Date(item.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small></span>{item.kind === "connection" ? <button type="button" className="primary-button" onClick={(event) => { event.stopPropagation(); void openNotification(item); const request = pendingRequests.find((candidate) => candidate.id === item.connectionRequestId); if (request) void acceptRequest(request); }}>Accept</button> : <ArrowRight size={16} aria-hidden="true" />}</article>) : visiblePendingRequests.length ? null : <div className="directory-empty"><Bell size={22} /><strong>You’re all caught up.</strong><span>Messages, calls, follows, requests, and group updates will appear here.</span></div>}</div></section>;
   };
 
-  const renderGroups = () => { const remoteGroups = liveGroupDirectory.map((group, index) => ({ id: group.conversation_id, name: group.title, meta: group.category ? group.category.replace("_", " & ") : "MTU group", members: group.member_count, tone: ["rose", "sage", "butter", "apricot"][index % 4], category: group.category, isMember: group.is_member, requestStatus: group.my_request_status, imageUrl: group.group_image_url })); const sourceGroups = (onSearchGroups ? remoteGroups : groups.map((group) => ({ ...group, category: null, isMember: joinedGroups.includes(String(group.id)), requestStatus: null, imageUrl: null }))).filter((group) => !privateGroupIds.has(String(group.id))); const normalizedQuery = groupSearchQuery.trim().toLowerCase(); const filteredGroups = sourceGroups.filter((group) => { const haystack = `${group.name} ${group.meta}`.toLowerCase(); const categoryMatch = groupCategoryFilter === "all" || group.category === groupCategoryFilter || (!onSearchGroups && haystack.includes(groupCategoryFilter)); return categoryMatch && (!normalizedQuery || haystack.includes(normalizedQuery)); }); return <section className="workspace-view premium-feature-view"><div className="workspace-heading"><div><span className="eyebrow dark">Your communities</span><h1>Campus<br /><em>groups.</em></h1><p>Course circles, societies, and project rooms live here. Every group uses real membership data from Convo.</p></div><div className="workspace-heading-actions"><button className="primary-button" onClick={() => void createGroupConversation()}><Users size={16} /> Create group</button></div></div><div className="group-discovery-controls"><label className="sr-only" htmlFor="group-discovery-search">Search groups</label><input id="group-discovery-search" value={groupSearchQuery} onChange={(event) => setGroupSearchQuery(event.target.value)} placeholder="Search groups, courses, programmes..." /><div className="group-category-tabs" role="tablist" aria-label="Group categories">{["all", "academic", "social", "sports", "technology", "business", "arts", "club", "project", "code_tech", "cruise"].map((category) => <button type="button" role="tab" aria-selected={groupCategoryFilter === category} className={groupCategoryFilter === category ? "is-active" : ""} key={category} onClick={() => setGroupCategoryFilter(category)}>{category === "all" ? "All" : category === "code_tech" ? "Code & Tech" : category.charAt(0).toUpperCase() + category.slice(1)}</button>)}</div></div>{groupDirectoryLoading ? <div className="group-row-list" aria-busy="true"><div className="group-directory-skeleton" /><div className="group-directory-skeleton" /><div className="group-directory-skeleton" /></div> : groupDirectoryError ? <div className="premium-empty-state"><h2>Groups are unavailable.</h2><p>{groupDirectoryError}</p></div> : sourceGroups.length ? <div className="group-row-list">{filteredGroups.map((group) => { const joined = joinedGroups.includes(String(group.id)); return <article className={`group-row ${group.tone}`} key={group.id}><span className="group-row-mark" aria-hidden="true">{group.imageUrl ? <img className={loadedAvatarImages[`group:${group.id}:${group.imageUrl}`] ? "is-loaded" : ""} src={group.imageUrl} alt="" loading="lazy" onLoad={() => setLoadedAvatarImages((current) => ({ ...current, [`group:${group.id}:${group.imageUrl}`]: true }))} /> : <Users size={17} />}</span><div><span className="eyebrow dark">{joined ? "Your circle" : "Discover group"}</span><h2>{group.name}</h2><p>{group.meta}</p></div><small>{group.members ? `${group.members} members` : "Membership updates live"}</small><button className={joined ? "outline-button" : "primary-button"} onClick={() => { if (onSearchGroups) { if (joined || group.isMember) { setSelectedConversationId(String(group.id)); setActiveView("messages"); } else if (group.requestStatus === "pending") return; else void requestToJoinGroup(String(group.id), group.name); } else joinGroup(String(group.id), group.name); }}>{joined || group.isMember ? "Open group" : group.requestStatus === "pending" ? "Request pending" : "Request to join"} <ArrowRight size={14} /></button></article>; })}{!filteredGroups.length && <div className="premium-empty-state"><h2>No live groups match that search.</h2><p>Try another course, programme, or category.</p></div>}</div> : <div className="premium-empty-state"><span className="empty-orbit"><Users size={22} /></span><h2>Your groups will gather here.</h2><p>Create a private group chat or join a verified campus circle when one is available.</p><button className="primary-button" onClick={() => void createGroupConversation()}>Create a group <ArrowRight size={14} /></button></div>}</section>; };
 
-  const renderCampus = () => <section className="workspace-view premium-feature-view"><div className="workspace-heading"><div><span className="eyebrow dark">Campus pulse</span><h1>What is<br /><em>moving.</em></h1><p>Verified announcements, circle updates, and campus conversations in one calm place.</p></div><div className="workspace-heading-actions"><button className="outline-button" onClick={() => openView("events")}><CalendarDays size={16} /> Events</button></div></div>{posts.length ? <div className="campus-pulse-list">{posts.map((post) => <article className="campus-pulse-card" key={post.id}><span className={`feed-avatar ${post.tone}`}>{post.author_name.slice(0, 2).toUpperCase()}</span><div><span className="eyebrow dark">Campus update</span><b>{post.author_name}</b><small>{post.author_meta}</small><p>{post.body}</p><div className="post-actions"><button aria-label="React to post">♡ {post.likes}</button><button onClick={() => openView("messages")}><MessageCircle size={13} /> Discuss</button></div></div></article>)}</div> : <div className="premium-empty-state"><span className="empty-orbit"><Compass size={22} /></span><h2>Campus pulse is quiet.</h2><p>Verified posts, announcements, polls, and event updates will appear here when they are shared.</p></div>}</section>;
+  const renderCampusFeed = (viewMode: "feed" | "campus") => <CampusFeedPanel
+    client={vaultClient || null}
+    posts={posts}
+    currentUserId={currentUserId}
+    displayName={displayName}
+    avatarUrl={avatarUrl}
+    viewMode={viewMode}
+    onOpenMessages={() => openView("messages")}
+    onOpenMarketplace={() => openView("marketplace")}
+    onOpenEvents={() => openView("events")}
+    onOpenMemberProfile={(memberId, memberName) => { void openMemberProfile(memberId, memberName); }}
+    onMessageMember={async (memberId) => {
+      if (!onStartDirectConversation) return { error: "Messaging is unavailable right now." };
+      const result = await onStartDirectConversation(memberId);
+      if (result.error || !result.data) return { error: result.error?.message || "Could not open a conversation with this member." };
+      setSelectedConversationId(result.data);
+      setActiveView("messages");
+      return { error: null };
+    }}
+  />;
+
+  const renderMarketplace = () => <MarketplacePanel
+    client={vaultClient || null}
+    currentUserId={currentUserId || ""}
+    onContactSeller={async (sellerId) => {
+      if (!currentUserId) return { error: "Sign in to message a seller." };
+      if (!onStartDirectConversation) return { error: "Messaging is unavailable right now." };
+      const result = await onStartDirectConversation(sellerId);
+      if (result.error || !result.data) return { error: result.error?.message || "Could not open a conversation with this seller." };
+      const conversationId = result.data;
+      setSelectedConversationId(conversationId);
+      setLiveConversations((current) => current.some((conversation) => conversation.id === conversationId)
+        ? current
+        : [{ id: conversationId, name: "Marketplace seller", meta: "Direct conversation", message: "No messages yet.", tone: "sage", unread: "" }, ...current]);
+      setActiveView("messages");
+      return { error: null };
+    }}
+  />;
 
   React.useEffect(() => {
     if (activeView !== "events" || activeConversation?.kind !== "group") { setStandaloneEvents([]); setStandalonePolls([]); setStandaloneTasks([]); setStandaloneAnnouncements([]); return; }
@@ -2603,7 +3221,67 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
     popup.print();
   };
   const renderVault = () => <VaultPanel client={vaultClient || null} />;
-  const renderAssistant = () => <section className="workspace-view premium-feature-view assistant-view"><input ref={assistantFileInputRef} className="sr-only" type="file" multiple accept="image/*,.pdf,.txt,.csv,.json" onChange={(event) => { addAssistantFiles(event.target.files); event.currentTarget.value = ""; }} /><div className="assistant-heading"><div><span className="eyebrow dark"><Bot size={13} /> Timothy · Study assistant</span><h1>Study with<br /><em>context.</em></h1><p>Ask Timothy to explain, summarize, or work through a concept. He can use your shared-folder file list and any files or photos you attach.</p></div><div className="assistant-limit"><span>{assistantSecondsLeft ? `Time left · ${Math.floor(assistantSecondsLeft / 60)}:${String(assistantSecondsLeft % 60).padStart(2, "0")}` : "2-hour study window"}</span><small>Unlimited questions while active · 1-hour cooldown after</small></div></div><div className="assistant-launch"><div className="assistant-launch-bar"><span className="assistant-orb"><Bot size={22} /></span><div><strong>Hi, I’m Timothy.</strong><small>Upload a page, photo, or document when you want me to inspect it. I’ll remind you before your study window ends.</small></div></div>{assistantMessages.length > 0 && <div ref={assistantTranscriptRef} className="assistant-transcript">{assistantMessages.map((m, i) => <article key={i} className={`assistant-message ${m.role}`}><b>{m.role === "user" ? "You" : "Timothy"}</b>{m.role === "assistant" ? <><Streamdown>{m.content}</Streamdown><div className="assistant-message-tools"><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy</button><button type="button" className="ghost-button" onClick={() => downloadAssistantPdf(m.content)}><Download size={13} /> PDF</button></div></> : <><p>{m.content}</p><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy prompt</button></>}{m.attachmentNames?.length ? <div className="assistant-message-attachments">{m.attachmentNames.map((name) => <span key={name}><Paperclip size={12} />{name}</span>)}</div> : null}</article>)}</div>}<form className="assistant-form" onSubmit={(event) => { event.preventDefault(); const text = assistantDraft.trim(); if ((!text && !assistantAttachments.length) || assistantBusy || !onAskAssistant) return; const files = assistantAttachments; const next = [...assistantMessages, { role: "user" as const, content: text || "Please review these attachments.", attachmentNames: files.map((file) => file.name) }]; const sharedFiles = sharedFilesData.map((file) => ({ name: file.attachment_path?.split("/").pop() || "Shared file", mimeType: file.attachment_mime || "file" })); setAssistantMessages(next); setAssistantDraft(""); setAssistantAttachments([]); setAssistantBusy(true); void onAskAssistant(next.map(({ role, content }) => ({ role, content })), files, sharedFiles).then((answer) => { setAssistantMessages([...next, { role: "assistant" as const, content: answer.text }]); if (answer.sessionSeconds) setAssistantSecondsLeft(answer.sessionSeconds); }).catch((e: unknown) => toast.error(e instanceof Error ? e.message : "Timothy is unavailable.")).finally(() => setAssistantBusy(false)); }}><label htmlFor="assistant-question">What would you like help studying?</label><textarea id="assistant-question" value={assistantDraft} onChange={(event) => setAssistantDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Explain this passage, summarize a concept, or define a word…" rows={3} /><div className="assistant-composer-footer"><div className="assistant-attachment-list">{assistantAttachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip size={12} />{file.name}<button type="button" aria-label={`Remove ${file.name}`} onClick={() => setAssistantAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button></span>)}</div><div className="assistant-actions"><button type="button" className="outline-button" onClick={() => assistantFileInputRef.current?.click()} disabled={assistantAttachments.length >= 4}><Paperclip size={15} /> Add files or photos</button><button className="primary-button" type="submit" disabled={assistantBusy || !onAskAssistant}><MessageCircle size={15} /> {assistantBusy ? "Timothy is thinking…" : "Ask Timothy"}</button></div></div></form></div></section>;
+  const renderAssistant = () => <section className="workspace-view premium-feature-view assistant-view">
+    <input ref={assistantFileInputRef} className="sr-only" type="file" multiple accept="image/*,.pdf,.txt,.csv,.json" onChange={(event) => { addAssistantFiles(event.target.files); event.currentTarget.value = ""; }} />
+    <div className="assistant-heading">
+      <div>
+        <span className="eyebrow dark"><Bot size={13} /> Timothy · Study assistant</span>
+        <h1>Study with<br /><em>context.</em></h1>
+        <p>Ask how to use Convo, work through a study question, or attach supported files for analysis.</p>
+      </div>
+      <div className="assistant-limit">
+        <span>{assistantSecondsLeft ? `Time left · ${Math.floor(assistantSecondsLeft / 60)}:${String(assistantSecondsLeft % 60).padStart(2, "0")}` : "Study assistant"}</span>
+        <small>Verified website help is local; complex study generation uses Gemini’s free tier.</small>
+      </div>
+    </div>
+    <div className="assistant-launch">
+      <div className="assistant-launch-bar">
+        <span className="assistant-orb"><Bot size={22} /></span>
+        <div><strong>Hi, I’m Timothy.</strong><small>Ask about Convo features or attach a PDF, text file, CSV, JSON file, or image for study help.</small></div>
+      </div>
+      {assistantMessages.length > 0 && <div ref={assistantTranscriptRef} className="assistant-transcript">{assistantMessages.map((m, i) => <article key={i} className={`assistant-message ${m.role}`}>
+        <b>{m.role === "user" ? "You" : "Timothy"}</b>
+        {m.role === "assistant" ? <>
+          {m.source && <small className="assistant-response-source">{m.source === "local" ? "Verified Convo help · no Gemini request" : m.source === "fallback" ? "Local fallback · Gemini unavailable" : "Gemini study response"}</small>}
+          <Streamdown>{m.content}</Streamdown>
+          {m.action && <button type="button" className="outline-button assistant-navigation-action" onClick={() => m.action && setActiveView(m.action.view)}>{m.action.label} <ArrowRight size={14} /></button>}
+          <div className="assistant-message-tools"><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy</button><button type="button" className="ghost-button" onClick={() => downloadAssistantPdf(m.content)}><Download size={13} /> PDF</button></div>
+        </> : <>
+          <p>{m.content}</p><button type="button" className="ghost-button" onClick={() => copyAssistantText(m.content)}><Copy size={13} /> Copy prompt</button>
+        </>}
+        {m.attachmentNames?.length ? <div className="assistant-message-attachments">{m.attachmentNames.map((name) => <span key={name}><Paperclip size={12} />{name}</span>)}</div> : null}
+      </article>)}</div>}
+      <form className="assistant-form" onSubmit={(event) => {
+        event.preventDefault();
+        const text = assistantDraft.trim();
+        if ((!text && !assistantAttachments.length) || assistantBusy || !onAskAssistant) return;
+        const files = assistantAttachments;
+        const next = [...assistantMessages, { role: "user" as const, content: text || "Please review these attachments.", attachmentNames: files.map((file) => file.name) }];
+        const sharedFiles = sharedFilesData.map((file) => ({ name: file.attachment_path?.split("/").pop() || "Shared file", mimeType: file.attachment_mime || "file" }));
+        setAssistantMessages(next);
+        setAssistantDraft("");
+        setAssistantAttachments([]);
+        setAssistantBusy(true);
+        void onAskAssistant(next.map(({ role, content }) => ({ role, content })), files, sharedFiles, { view: activeView })
+          .then((answer) => {
+            setAssistantMessages([...next, { role: "assistant" as const, content: answer.text, source: answer.mode, action: answer.action }]);
+            if (answer.sessionSeconds) setAssistantSecondsLeft(answer.sessionSeconds);
+          })
+          .catch((e: unknown) => toast.error(e instanceof Error ? e.message : "Timothy is unavailable."))
+          .finally(() => setAssistantBusy(false));
+      }}>
+        <label htmlFor="assistant-question">What would you like help with?</label>
+        <textarea id="assistant-question" value={assistantDraft} onChange={(event) => setAssistantDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="How do I change privacy settings? Explain this passage…" rows={3} />
+        <div className="assistant-composer-footer">
+          <div className="assistant-attachment-list">{assistantAttachments.map((file, index) => <span key={`${file.name}-${index}`}><Paperclip size={12} />{file.name}<button type="button" aria-label={`Remove ${file.name}`} onClick={() => setAssistantAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button></span>)}</div>
+          <div className="assistant-actions">
+            <button type="button" className="outline-button" onClick={() => assistantFileInputRef.current?.click()} disabled={assistantAttachments.length >= 4}><Paperclip size={15} /> Add files or photos</button>
+            <button className="primary-button" type="submit" disabled={assistantBusy || !onAskAssistant}><MessageCircle size={15} /> {assistantBusy ? "Timothy is thinking…" : "Ask Timothy"}</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </section>;
 
   const renderPrivacyControls = () => <article className="settings-privacy-card"><div><span className="eyebrow dark">Profile privacy</span><h2>Choose what<br /><em>students see.</em></h2><p>Your public student ID is shared with other students by default. Turn off ID copying to remove it from directory profiles and profile actions.</p></div><div className="privacy-control-list">{([['programme', 'Programme'], ['college', 'College'], ['level', 'Level'], ['incognito', 'Incognito mode'], ['allow_exact_id_lookup', 'Exact Convo ID lookup'], ['allow_public_id_copy', 'Allow public ID copying']] as const).map(([field, label]) => <label key={field} className="privacy-control"><span><b>{label}</b><small>{field === "incognito" ? (visibilityDraft[field] ? 'Only approved people can find you' : 'Discoverable to eligible verified students') : field === "allow_exact_id_lookup" ? (visibilityDraft[field] ? 'People with your exact ID can find you' : 'Exact ID lookup is disabled') : field === "allow_public_id_copy" ? (visibilityDraft[field] ? 'Other students can see and copy your public ID' : 'Your public ID is hidden from other student profiles') : (visibilityDraft[field] ? 'Visible to eligible verified students' : 'Private to you')}</small></span><button type="button" role="switch" aria-label={field === "allow_public_id_copy" ? "Allow others to copy my public student ID" : `Show ${label} to students`} aria-checked={visibilityDraft[field]} className={`theme-toggle ${visibilityDraft[field] ? 'is-dark' : ''}`} onClick={() => void updatePrivacy(field)} disabled={privacySaving}><i /></button></label>)}</div></article>;
 
@@ -2630,7 +3308,121 @@ export function ConvoDashboard({ currentUserId = "", displayName, legalName = ""
 
   return <StudentIdCardVisibilityContext.Provider value={visibilityDraft}><main className={`dashboard-shell ${isDarkMode ? "theme-dark" : ""} ${isExiting ? "is-exiting" : ""} ${isEntering ? "is-entering" : ""}`}>
     <header className="dashboard-topbar"><button className="brand" onClick={() => openView("home")} aria-label="Open Convo home"><span className="brand-mark"><span /><span /><span /></span><span><b>Convo</b><small>MTU COMMUNITY</small></span></button><div className="dashboard-topbar-center"><span className="topbar-location"><span className="pulse-dot" /> {navLabel(activeView)}</span></div><div className="dashboard-actions"><button className="icon-button" aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"} onClick={() => openView("notifications")}><Bell size={17} />{unreadNotificationCount > 0 && <i className="notification-dot has-unread">{unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}</i>}</button><button className="profile-chip" onClick={() => openView("profile")}><span className="profile-chip-avatar">{avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{(displayName || "MT").slice(0, 2).toUpperCase()}</span>}</span><b>{displayName || "Your profile"}</b><ChevronRight size={14} /></button><button className="logout-button" onClick={() => setShowLogoutConfirm(true)}>Log out</button></div></header>
-    <div className="dashboard-body"><aside className="convo-sidebar" aria-label="Convo navigation"><div className="sidebar-section-label">Workspace</div><nav>{sidebarNavItems.map((item) => <button key={item.view} className={`sidebar-nav-item ${activeView === item.view ? "is-active" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={`Open ${navLabel(item.view)}`}><span>{item.icon}</span><b>{navLabel(item.view)}</b>{item.badge && <i>{item.badge}</i>}</button>)}</nav></aside><nav ref={dockRef} className="convo-top-dock" aria-label="Convo workspace" onPointerMove={moveDock} onPointerLeave={resetDock}>{primaryNavItems.map((item) => <button key={item.view} className={`dock-item ${activeView === item.view ? "is-active" : ""} ${item.badge && (item.view === "messages" || item.view === "notifications") ? "has-unread" : ""}`} onClick={() => openView(item.view)} aria-current={activeView === item.view ? "page" : undefined} aria-label={navLabel(item.view)}><span className="dock-icon-wrap">{item.icon}{item.badge && <i>{item.badge}</i>}</span><span className="dock-tooltip" role="tooltip">{navLabel(item.view)}</span></button>)}<span className="dock-divider" aria-hidden="true" /><div className="dock-more-wrap"><button className={`dock-item ${showMoreMenu ? "is-active" : ""}`} onClick={() => setShowMoreMenu((open) => !open)} aria-label="More" aria-expanded={showMoreMenu} aria-haspopup="menu"><MoreHorizontal size={17} /><span className="dock-tooltip" role="tooltip">More</span></button>{showMoreMenu && <div className="dock-menu" role="menu"><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("events"); }}><span>Events</span><small>Group events, polls, tasks, and announcements</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); openView("settings"); }}><span>Settings</span><small>Personalize your space</small></button><button role="menuitem" onClick={() => { setShowMoreMenu(false); setShowLogoutConfirm(true); }}><span>Log out</span><small>Close this session safely</small></button></div>}</div><span className="dock-status"><span className="pulse-dot" /><small>MTU verified</small></span></nav><div className="dashboard-atmosphere"><ConvoOrbit /></div><div className="dashboard-content">{activeView === "home" && renderHome()}{activeView === "discover" && renderDiscover()}{activeView === "messages" && currentUserId && <StatusStories currentUserId={currentUserId} displayName={displayName} avatarUrl={avatarUrl} />}{activeView === "messages" && renderMessages()}{activeView === "notifications" && renderNotifications()}{activeView === "profile" && renderProfile()}{activeView === "groups" && renderGroups()}{activeView === "campus" && renderCampus()}{activeView === "events" && renderEvents()}{activeView === "files" && renderFiles()}{activeView === "assistant" && renderAssistant()}{activeView === "vault" && renderVault()}{activeView === "settings" && renderSettings()}{activeView === "id" && renderDigitalId()}</div></div>
+    <div className="dashboard-body">
+      <aside className="convo-sidebar" aria-label="Convo navigation">
+        <div className="sidebar-section-label">Workspace</div>
+        <nav>
+          {sidebarNavItems.map((item) => (
+            <button
+              key={item.view}
+              className={`sidebar-nav-item ${activeView === item.view ? "is-active" : ""}`}
+              onClick={() => openView(item.view)}
+              aria-current={activeView === item.view ? "page" : undefined}
+              aria-label={`Open ${navLabel(item.view)}`}
+            >
+              <span>{item.icon}</span>
+              <b>{navLabel(item.view)}</b>
+              {item.badge && <i>{item.badge}</i>}
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <nav
+        ref={dockRef}
+        className="convo-top-dock"
+        aria-label="Convo workspace"
+        onPointerMove={moveDock}
+        onPointerLeave={resetDock}
+      >
+        {primaryNavItems.map((item) => (
+          <button
+            key={item.view}
+            className={`dock-item ${activeView === item.view ? "is-active" : ""} ${item.badge && (item.view === "messages" || item.view === "notifications") ? "has-unread" : ""}`}
+            onClick={() => openView(item.view)}
+            aria-current={activeView === item.view ? "page" : undefined}
+            aria-label={navLabel(item.view)}
+          >
+            <span className="dock-icon-wrap">
+              {item.icon}
+              {item.badge && <i>{item.badge}</i>}
+            </span>
+            <span className="dock-tooltip" role="tooltip">{navLabel(item.view)}</span>
+          </button>
+        ))}
+        <span className="dock-divider" aria-hidden="true" />
+        <div className="dock-more-wrap">
+          <button
+            className={`dock-item ${showMoreMenu ? "is-active" : ""}`}
+            onClick={() => setShowMoreMenu((open) => !open)}
+            aria-label="More"
+            aria-expanded={showMoreMenu}
+            aria-haspopup="menu"
+          >
+            <MoreHorizontal size={17} />
+            <span className="dock-tooltip" role="tooltip">More</span>
+          </button>
+          {showMoreMenu && (
+            <div className="dock-menu" role="menu">
+              {dockMoreItems.map((item) => (
+                <button
+                  key={item.view}
+                  role="menuitem"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    openView(item.view);
+                  }}
+                >
+                  <span>{item.title}</span>
+                  <small>{item.description}</small>
+                </button>
+              ))}
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setShowMoreMenu(false);
+                  openView("campus");
+                }}
+              >
+                <span>Campus Hub</span>
+                <small>Feed, Stories, and campus conversations</small>
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setShowMoreMenu(false);
+                  setShowLogoutConfirm(true);
+                }}
+              >
+                <span>Log out</span>
+                <small>Close this session safely</small>
+              </button>
+            </div>
+          )}
+        </div>
+        <span className="dock-status"><span className="pulse-dot" /><small>MTU verified</small></span>
+      </nav>
+      <div className="dashboard-atmosphere"><ConvoOrbit /></div>
+      <div className="dashboard-content">
+        {activeView === "home" && renderHome()}
+        {activeView === "discover" && renderDiscover()}
+        {activeView === "messages" && currentUserId && (
+          <StatusStories currentUserId={currentUserId} displayName={displayName} avatarUrl={avatarUrl} audience="connections" />
+        )}
+        {activeView === "messages" && renderMessages()}
+        {activeView === "notifications" && renderNotifications()}
+        {activeView === "profile" && renderProfile()}
+        {activeView === "profile" && renderSocialProfile()}
+        {activeView === "groups" && renderGroups()}
+        {(activeView === "feed" || activeView === "campus") && renderCampusFeed("feed")}
+        {activeView === "marketplace" && renderMarketplace()}
+        {activeView === "events" && renderEvents()}
+        {activeView === "files" && renderFiles()}
+        {activeView === "assistant" && renderAssistant()}
+        {activeView === "vault" && renderVault()}
+        {activeView === "settings" && renderSettings()}
+        {activeView === "id" && renderDigitalId()}
+      </div>
+    </div>
     {showLogoutConfirm && <div className="logout-backdrop" role="presentation" onClick={() => setShowLogoutConfirm(false)}><div className="logout-dialog" role="dialog" aria-modal="true" aria-labelledby="logout-title" onClick={(event) => event.stopPropagation()}><span className="logout-orbit"><Check size={18} /></span><span className="eyebrow dark">SECURE EXIT</span><h2 id="logout-title">Leave Convo<br /><em>for now?</em></h2><p>Your session will close safely on this device.</p><div className="logout-dialog-actions"><button className="outline-button" onClick={() => setShowLogoutConfirm(false)}>Stay in Convo</button><button className="primary-button" onClick={() => { if (onLogout) void onLogout(); else setShowLogoutConfirm(false); }}>Log out safely <ArrowRight size={15} /></button></div></div></div>}
   </main></StudentIdCardVisibilityContext.Provider>;
 }

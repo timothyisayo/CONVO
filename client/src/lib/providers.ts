@@ -1,11 +1,25 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ConvoWorkspaceView } from "@shared/assistant-knowledge";
+
+export class ProviderRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = "ProviderRequestError";
+  }
+}
 
 async function request<T>(client: SupabaseClient, path: string, body: unknown): Promise<T> {
   const { data, error } = await client.auth.getSession();
-  if (error || !data.session?.access_token) throw new Error("Your session has expired. Please sign in again.");
+  if (error || !data.session?.access_token) throw new ProviderRequestError("Your session has expired. Please sign in again.", 401);
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify(body) });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "The request could not be completed.");
+  if (!response.ok) {
+    throw new ProviderRequestError(
+      typeof payload.error === "string" ? payload.error : "The request could not be completed.",
+      response.status,
+      typeof payload.code === "string" ? payload.code : undefined,
+    );
+  }
   return payload as T;
 }
 
@@ -15,11 +29,11 @@ export const getProviderToken = (client: SupabaseClient, callId: string) => requ
 export const updateProviderCallStatus = (client: SupabaseClient, callId: string, status: "ringing" | "answered" | "declined" | "ended" | "failed") => request<{ ok: true }>(client, "/api/calls/status", { callId, status });
 export type AssistantAttachment = { name: string; mimeType: string; data: string };
 export type AssistantSharedFile = { name: string; mimeType: string };
-export type AssistantProfile = { name: string; email?: string; age: number; birthday: string; year: string; programme: string; goal: string };
+export type AssistantPageContext = { view: ConvoWorkspaceView };
 export const askGemini = (
   client: SupabaseClient,
   messages: Array<{ role: "user" | "assistant"; content: string }>,
   attachments: AssistantAttachment[] = [],
   sharedFiles: AssistantSharedFile[] = [],
-  profile?: AssistantProfile,
-) => request<{ text: string; sessionSeconds?: number }>(client, "/api/ai/gemini", { messages, attachments, sharedFiles, profile });
+  context?: AssistantPageContext,
+) => request<{ text: string; sessionSeconds?: number; mode?: "local" | "ai" | "fallback"; action?: { label: string; view: ConvoWorkspaceView } }>(client, "/api/ai/gemini", { messages, attachments, sharedFiles, context });

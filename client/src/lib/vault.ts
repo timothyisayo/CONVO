@@ -6,6 +6,7 @@ export type VaultSource = {
   type?: string;
   status?: string;
   created?: string;
+  updated?: string;
 };
 
 export type VaultNote = {
@@ -91,4 +92,45 @@ export function askVault(client: SupabaseClient, question: string) {
     method: "POST",
     body: JSON.stringify({ question }),
   });
+}
+
+export function updateVaultSource(client: SupabaseClient, sourceId: string, title: string) {
+  return vaultRequest<VaultSource>(client, `/api/vault/sources/${encodeURIComponent(sourceId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function deleteVaultSource(client: SupabaseClient, sourceId: string) {
+  return vaultRequest<{ ok: boolean }>(client, `/api/vault/sources/${encodeURIComponent(sourceId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function updateVaultNote(client: SupabaseClient, noteId: string, title: string, content: string) {
+  return vaultRequest<VaultNote>(client, `/api/vault/notes/${encodeURIComponent(noteId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ title, content }),
+  });
+}
+
+export function deleteVaultNote(client: SupabaseClient, noteId: string) {
+  return vaultRequest<{ ok: boolean }>(client, `/api/vault/notes/${encodeURIComponent(noteId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function downloadVaultSource(client: SupabaseClient, sourceId: string) {
+  const { data: userData, error: userError } = await client.auth.getUser();
+  if (userError || !userData.user) throw new Error("Your session has expired. Please sign in again.");
+  const { data, error } = await client.auth.getSession();
+  if (error || !data.session?.access_token) throw new Error("Your session has expired. Please sign in again.");
+  const response = await fetch(`/api/vault/sources/${encodeURIComponent(sourceId)}/download`, {
+    headers: { Authorization: `Bearer ${data.session.access_token}` },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(typeof payload.error === "string" ? payload.error : "Vault source file could not be downloaded.");
+  }
+  return response.blob();
 }

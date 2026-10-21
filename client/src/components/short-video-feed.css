@@ -1,0 +1,68 @@
+.short-video-feed {
+  max-width: 44rem;
+  max-height: min(82vh, 60rem);
+  margin-inline: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: thin;
+}
+
+.short-video-feed-item {
+  display: block;
+  min-height: min(72vh, 52rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+  scroll-snap-align: start;
+}
+
+.short-video-feed-item > .feed-avatar {
+  float: left;
+  margin: 0 0.75rem 0.5rem 0;
+}
+
+.short-video-feed-item .campus-post-content {
+  min-width: 0;
+}
+
+.short-video-feed-item .campus-post-byline {
+  min-height: 2.75rem;
+  align-items: center;
+}
+
+.short-video-feed-item .campus-post-content > p {
+  clear: both;
+  margin-top: 0.75rem;
+}
+
+.short-video-feed-item .campus-post-media {
+  clear: both;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 1rem;
+}
+
+.short-video-feed-item .campus-post-media video {
+  width: 100%;
+  max-height: min(62vh, 42rem);
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  background: #191714;
+}
+
+@media (max-width: 640px) {
+  .short-video-feed {
+    max-height: 75vh;
+    margin-inline: -0.5rem;
+  }
+
+  .short-video-feed-item {
+    min-height: 68vh;
+    padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .short-video-feed {
+    scroll-behavior: auto;
+  }
+}

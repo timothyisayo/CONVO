@@ -5,6 +5,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConvoDashboard } from "./ConvoDashboard";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn() }) }));
+vi.mock("@/hooks/useMtuStatuses", () => ({
+  useMtuStatuses: () => ({
+    statuses: [],
+    loading: false,
+    error: "",
+    refresh: vi.fn(),
+    publish: vi.fn(),
+    remove: vi.fn(),
+    markViewed: vi.fn(),
+  }),
+}));
 
 afterEach(() => cleanup());
 
